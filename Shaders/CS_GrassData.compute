@@ -1,0 +1,63 @@
+#pragma kernel CSGrassData
+
+struct GrassInstance
+{
+    float3 position;
+    uint packedData;
+};
+
+RWStructuredBuffer<GrassInstance> _InstanceBuffer;
+
+float3 _BoundsCenter;
+float3 _BoundsExtents;
+float2 _ScaleRange;
+uint _RandomSeed;
+uint _InstanceCount;
+
+// Hash function for random number generation
+uint Hash(uint seed)
+{
+    seed = (seed ^ 61) ^ (seed >> 16);
+    seed *= 9;
+    seed = seed ^ (seed >> 4);
+    seed *= 0x27d4eb2d;
+    seed = seed ^ (seed >> 15);
+    return seed;
+}
+
+// Convert hash to float [0, 1)
+float Random(uint seed)
+{
+    return Hash(seed) / 4294967296.0;
+}
+
+// Random float in range [min, max)
+float RandomRange(uint seed, float minVal, float maxVal)
+{
+    return minVal + Random(seed) * (maxVal - minVal);
+}
+
+[numthreads(256, 1, 1)]
+void CSGrassData(uint3 id : SV_DispatchThreadID)
+{
+    uint instanceIndex = id.x;
+    if (instanceIndex >= _InstanceCount) return;
+    
+    uint seed = _RandomSeed + instanceIndex * 12345;
+    
+    float x = RandomRange(Hash(seed), -_BoundsExtents.x, _BoundsExtents.x);
+    float z = RandomRange(Hash(seed + 1), -_BoundsExtents.z, _BoundsExtents.z);
+    
+    float3 worldPos = _BoundsCenter + float3(x, 0.0, z);
+    
+    // Random rotation and scale for THIS blade
+    float rot01 = RandomRange(Hash(seed + 2), 0.0, 1.0);
+    float scale01 = RandomRange(Hash(seed + 3), 0.0, 1.0);
+    
+    uint rot16 = (uint)(rot01 * 65535.0);
+    uint scale16 = (uint)(scale01 * 65535.0);
+    uint packedData = (rot16 << 16) | scale16;
+    
+    _InstanceBuffer[instanceIndex].position = worldPos;
+    _InstanceBuffer[instanceIndex].packedData = packedData;
+}

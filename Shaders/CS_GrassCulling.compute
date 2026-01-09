@@ -1,0 +1,76 @@
+#pragma kernel CSGrassCulling
+
+struct GrassInstance
+{
+    float3 position;
+    uint packedData;
+};
+
+cbuffer GrassCullingParams
+{
+    float3 _CameraPosition;
+    uint _InstanceCount;
+    int _CullDistanceSq;
+    float4 _FrustumPlanes[6];
+}
+
+RWStructuredBuffer<GrassInstance> _InstanceBuffer;
+AppendStructuredBuffer<uint> _VisibleIndicesBuffer;
+
+bool IsFrustumCulled(float3 worldPos)
+{
+    for (int i = 0; i < 6; i++)
+    {
+        float4 plane = _FrustumPlanes[i];
+        float dist = dot(plane.xyz, worldPos) + plane.w;
+        
+        if (dist < 0)
+            return true;
+    }
+    return false;
+}
+
+uint FastHash(uint x)
+{
+    x *= 747796405u;
+    x ^= x >> 16;
+    x *= 2891336453u;
+    x ^= x >> 16;
+    return x;
+}
+
+float Hash01(uint x)
+{
+    return (x & 0x00FFFFFFu) * (1.0 / 16777216.0); // 2^24
+}
+
+bool IsDistanceCulled(float3 worldPos, uint index)
+{
+    float3 d = worldPos - _CameraPosition;
+    float distSq = dot(d, d);
+
+    if (distSq > _CullDistanceSq)
+        return true;
+
+    float t = saturate(distSq * rcp(_CullDistanceSq));
+    t = t / (t + (1.0 - t) * 0.35);
+
+    float density = 1.0 - t;
+
+    float r = Hash01(FastHash(index));
+    return r > density;
+}
+
+[numthreads(256, 1, 1)]
+void CSGrassCulling(uint3 id : SV_DispatchThreadID)
+{
+    uint index = id.x;
+    if (index >= _InstanceCount) return;
+
+    float3 worldPos = _InstanceBuffer[index].position;
+
+    if (IsDistanceCulled(worldPos, index)) return;
+    if (IsFrustumCulled(worldPos)) return;
+    
+    _VisibleIndicesBuffer.Append(index);
+}

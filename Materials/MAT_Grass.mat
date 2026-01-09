@@ -1,0 +1,74 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &-7688296938893358220
+MonoBehaviour:
+  m_ObjectHideFlags: 11
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d0353a89b1f911e48b9e16bdc9f2e058, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Unity.RenderPipelines.Universal.Editor::UnityEditor.Rendering.Universal.AssetVersion
+  version: 10
+--- !u!21 &2100000
+Material:
+  serializedVersion: 8
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: MAT_Grass
+  m_Shader: {fileID: -6465566751694194690, guid: ee71307c40d6a2f48a42f8ce5c33f287, type: 3}
+  m_Parent: {fileID: 0}
+  m_ModifiedSerializedProperties: 0
+  m_ValidKeywords: []
+  m_InvalidKeywords: []
+  m_LightmapFlags: 4
+  m_EnableInstancingVariants: 0
+  m_DoubleSidedGI: 0
+  m_CustomRenderQueue: -1
+  stringTagMap: {}
+  disabledShaderPasses:
+  - MOTIONVECTORS
+  m_LockedProperties: 
+  m_SavedProperties:
+    serializedVersion: 3
+    m_TexEnvs:
+    - unity_Lightmaps:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - unity_LightmapsInd:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - unity_ShadowMasks:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    m_Ints: []
+    m_Floats:
+    - _Bottom: -0.1
+    - _InstanceDisplacement: 0
+    - _MaxDistance: 0.035
+    - _QueueControl: 0
+    - _QueueOffset: 0
+    - _Top: -1
+    - _UseWind: 0
+    - _WindFrequency: 0
+    - _WindSpeed: 0
+    - _WindStrength: 0
+    m_Colors:
+    - _BottomColor: {r: 0.07026697, g: 0.2608652, b: 0.2679245, a: 1}
+    - _CenterBounds: {r: 0, g: 0, b: 0, a: 0}
+    - _Color: {r: 0.26022777, g: 0.49433953, b: 0.27568358, a: 1}
+    - _MainColor: {r: 0.26473022, g: 0.6754716, b: 0.20264141, a: 1}
+    - _SizeBounds: {r: 0, g: 0, b: 0, a: 0}
+    - _TopCloseColor: {r: 0.6754716, g: 0.61185217, b: 0.26381624, a: 1}
+    - _TopFarColor: {r: 0.43137258, g: 0.7960784, b: 0.6039216, a: 1}
+    - _WindDirection: {r: 0, g: 0, b: 0, a: 0}
+  m_BuildTextureStacks: []
+  m_AllowLocking: 1

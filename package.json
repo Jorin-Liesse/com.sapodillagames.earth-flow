@@ -1,0 +1,17 @@
+{
+  "name": "com.sapodillagames.earth-flow",
+  "displayName": "EarthFlow",
+  "version": "1.0.0",
+  "unity": "6000.3",
+  "description": "A Unity plugin that adds terrain and environment functionalities for Sapodilla Games projects.",
+  "author": {
+    "name": "Jorin Liesse",
+    "url": "https://jorin-liesse.github.io/Portfolio/"
+  },
+  "keywords": ["terrain", "environment", "unity"],
+  "category": "Terrain",
+  "dependencies": {
+    "com.sapodillagames.patterns": "1.0.0",
+    "com.dbrizov.naughtyattributes": "2.1.4"
+  }
+}
