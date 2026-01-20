@@ -1,7 +1,8 @@
 using UnityEngine;
 using NaughtyAttributes;
+using System.Collections.Generic;
 
-[RequireComponent(typeof(IChunker))]
+[RequireComponent(typeof(Chunking))]
 public class ChunkerDisplay : MonoBehaviour
 {
     [SerializeField, MinMaxSlider(0, 10)] Vector2Int _displayHierarchyLevels = new Vector2Int(0, 10);
@@ -9,40 +10,11 @@ public class ChunkerDisplay : MonoBehaviour
     [SerializeField] bool _showCircularCoords = false;
     [SerializeField] bool _showUsedChunks = false;
 
-    [HorizontalLine]
-
-    [SerializeField, ReadOnly] Vector2Int _gridSize = new Vector2Int(100, 100);
-    [SerializeField, ReadOnly] Vector3 _tileSize = new(10, 1, 10);
-    [SerializeField, ReadOnly] int _viewDistance = 10;
-    [SerializeField, ReadOnly] int _bufferDistance = 1;
-    [SerializeField, ReadOnly] int _groupSize = 4;
-
-    [SerializeField, ReadOnly] int _loadingRadius;
-    [SerializeField, ReadOnly] int _loadingRadiusSqr;
-    [SerializeField, ReadOnly] int _viewDistanceSqr;
-    [SerializeField, ReadOnly] Vector2Int[] _circularCoords;
-    [SerializeField, ReadOnly] int _hierarchyLevels;
-    [SerializeField, ReadOnly] int _poolSize;
-
-    IChunker _chunker;
+    Chunking _chunker;
 
     void Start()
     {
-        _chunker = GetComponent<IChunker>();
-        ChunkerHelper.Initialize();
-
-        _gridSize = ChunkerHelper.GridSize;
-        _tileSize = ChunkerHelper.TileSize;
-        _viewDistance = ChunkerHelper.ViewDistance;
-        _bufferDistance = ChunkerHelper.BufferDistance;
-        _groupSize = ChunkerHelper.GroupSize;
-
-        _loadingRadius = ChunkerHelper.LoadingRadius;
-        _loadingRadiusSqr = ChunkerHelper.LoadingRadiusSqr;
-        _viewDistanceSqr = ChunkerHelper.ViewDistanceSqr;
-        _circularCoords = ChunkerHelper.CircularCoords;
-        _hierarchyLevels = ChunkerHelper.HierarchyLevels;
-        _poolSize = ChunkerHelper.PoolSize;
+        _chunker = GetComponent<Chunking>();
     }
 
     void OnDrawGizmos()
@@ -58,14 +30,15 @@ public class ChunkerDisplay : MonoBehaviour
     {
         for (int level = _displayHierarchyLevels.x; level <= _displayHierarchyLevels.y; level++)
         {
-            if (level >= _chunker.HierarchyLevels) break;
+            if (level >= _chunker.GetHierarchyLevels()) break;
 
-            Gizmos.color = Color.Lerp(Color.red, Color.green, (float)level / _chunker.HierarchyLevels);
+            Gizmos.color = Color.Lerp(Color.red, Color.green, (float)level / _chunker.GetHierarchyLevels());
 
-            var used = _chunker.GetUsedIndices(level);
-            for (int i = 0; i < used.Count; i++)
+            ChunkLevel chunkLevel = _chunker.GetChunkLevelIndices(level);
+            int[] used = chunkLevel.UsedChunks;
+            for (int i = 0; i < chunkLevel.UsedChunksCount; i++)
             {
-                ChunkData chunk = _chunker.GetChunk(used[i]);
+                ChunkData chunk = _chunker.GetChunkIndices(used[i]);
                 Gizmos.DrawWireCube(chunk.Bounds.center, chunk.Bounds.size);
             }
         }
@@ -76,25 +49,41 @@ public class ChunkerDisplay : MonoBehaviour
         Gizmos.color = Color.darkRed;
 
         Gizmos.DrawWireCube(transform.position, new Vector3(
-            ChunkerHelper.GridSize.x * ChunkerHelper.TileSize.x,
+            _chunker.GridSize.x * _chunker.TileSize.x,
             1,
-            ChunkerHelper.GridSize.y * ChunkerHelper.TileSize.z
+            _chunker.GridSize.y * _chunker.TileSize.z
         ));
     }
 
     void DrawCircularCoords()
     {
-        Gizmos.color = Color.cyan;
-
-        foreach (var coord in ChunkerHelper.CircularCoords)
+        for (int level = _displayHierarchyLevels.x; level <= _displayHierarchyLevels.y; level++)
         {
-            Vector3 center = new Vector3(
-                (coord.x + 0.5f) * ChunkerHelper.TileSize.x + transform.position.x,
-                transform.position.y,
-                (coord.y + 0.5f) * ChunkerHelper.TileSize.z + transform.position.z
+            if (level >= _chunker.GetHierarchyLevels()) break;
+
+            Gizmos.color = Color.Lerp(Color.gray, Color.white, (float)level / _chunker.GetHierarchyLevels());
+
+            ChunkLevel chunkLevel = _chunker.GetChunkLevelIndices(level);
+            float scale = chunkLevel.GridScale;
+
+            Vector3 offset = new(
+                transform.position.x + (0.5f * scale * _chunker.TileSize.x),
+                transform.position.y + (0.5f * scale * _chunker.TileSize.y),
+                transform.position.z + (0.5f * scale * _chunker.TileSize.z)
             );
 
-            Gizmos.DrawWireCube(center, ChunkerHelper.TileSize);
+            for (int i = 0; i < chunkLevel.CircularCoords.Length; i++)
+            {
+                Vector2Int coord = chunkLevel.CircularCoords[i];
+
+                Vector3 center = new(
+                    (coord.x * scale * _chunker.TileSize.x) + offset.x,
+                    offset.y,
+                    (coord.y * scale * _chunker.TileSize.z) + offset.z
+                );
+
+                Gizmos.DrawWireCube(center, _chunker.TileSize * scale);
+            }
         }
     }
 }
