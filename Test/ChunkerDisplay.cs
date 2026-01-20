@@ -1,6 +1,7 @@
 using UnityEngine;
 using NaughtyAttributes;
-using System.Collections.Generic;
+using Unity.Mathematics;
+using Unity.Collections;
 
 [RequireComponent(typeof(Chunking))]
 public class ChunkerDisplay : MonoBehaviour
@@ -34,11 +35,12 @@ public class ChunkerDisplay : MonoBehaviour
 
             Gizmos.color = Color.Lerp(Color.red, Color.green, (float)level / _chunker.GetHierarchyLevels());
 
-            ChunkLevel chunkLevel = _chunker.GetChunkLevelIndices(level);
-            int[] used = chunkLevel.UsedChunks;
+            ChunkLevel chunkLevel = _chunker.GetChunkLevel(level);
+            NativeArray<int> used = chunkLevel.UsedChunks;
+            
             for (int i = 0; i < chunkLevel.UsedChunksCount; i++)
             {
-                ChunkData chunk = _chunker.GetChunkIndices(used[i]);
+                ChunkData chunk = _chunker.GetChunk(used[i]);
                 Gizmos.DrawWireCube(chunk.Bounds.center, chunk.Bounds.size);
             }
         }
@@ -63,7 +65,7 @@ public class ChunkerDisplay : MonoBehaviour
 
             Gizmos.color = Color.Lerp(Color.gray, Color.white, (float)level / _chunker.GetHierarchyLevels());
 
-            ChunkLevel chunkLevel = _chunker.GetChunkLevelIndices(level);
+            ChunkLevel chunkLevel = _chunker.GetChunkLevel(level);
             float scale = chunkLevel.GridScale;
 
             Vector3 offset = new(
@@ -74,7 +76,7 @@ public class ChunkerDisplay : MonoBehaviour
 
             for (int i = 0; i < chunkLevel.CircularCoords.Length; i++)
             {
-                Vector2Int coord = chunkLevel.CircularCoords[i];
+                int2 coord = chunkLevel.CircularCoords[i];
 
                 Vector3 center = new(
                     (coord.x * scale * _chunker.TileSize.x) + offset.x,
@@ -82,7 +84,13 @@ public class ChunkerDisplay : MonoBehaviour
                     (coord.y * scale * _chunker.TileSize.z) + offset.z
                 );
 
-                Gizmos.DrawWireCube(center, (Vector3)_chunker.TileSize * scale);
+                Vector3 size = new(
+                    _chunker.TileSize.x * scale,
+                    _chunker.TileSize.y * scale,
+                    _chunker.TileSize.z * scale
+                );
+
+                Gizmos.DrawWireCube(center, size);
             }
         }
     }
