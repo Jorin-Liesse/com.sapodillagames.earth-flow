@@ -82,7 +82,7 @@ public class ChunkerDisplay : MonoBehaviour
                     (coord.y * scale * _chunker.TileSize.z) + offset.z
                 );
 
-                Gizmos.DrawWireCube(center, _chunker.TileSize * scale);
+                Gizmos.DrawWireCube(center, (Vector3)_chunker.TileSize * scale);
             }
         }
     }

@@ -4,7 +4,7 @@ using System.Collections.Generic;
 public class Chunking : MonoBehaviour
 {
     public Vector2Int GridSize = new(10000, 10000);
-    public Vector3 TileSize = new(10, 1, 10);
+    public Vector3Int TileSize = new(10, 1, 10);
     public int ViewDistance = 100;
     public int BufferDistance = 1;
     public int GroupSize = 4;
@@ -31,16 +31,16 @@ public class Chunking : MonoBehaviour
         _cameraTransform = _mainCamera.transform;
         _loadingRadius = ViewDistance + BufferDistance;
 
-        _hierarchyLevels = CalculateHierarchyLevels();
+        _hierarchyLevels = ChunkingHelper.CalculateHierarchyLevels(_loadingRadius, GroupSize);
 
-        int circularCoordsCount = CalculateCircularCoords(_loadingRadius, 1).Length;
-        int poolSize = CalculatePoolSize(circularCoordsCount, _hierarchyLevels);
+        int circularCoordsCount = ChunkingHelper.CalculateCircularCoords(_loadingRadius, 1).Length;
+        int poolSize = ChunkingHelper.CalculatePoolSize(circularCoordsCount, _hierarchyLevels, GroupSize);
 
         _chunkLevels = new ChunkLevel[_hierarchyLevels];
         for (int level = 0; level < _hierarchyLevels; level++)
         {
             int capacity = Mathf.CeilToInt(poolSize / Mathf.Pow(GroupSize, level));
-            _chunkLevels[level] = CreateChunkLevel(capacity, level);
+            _chunkLevels[level] = ChunkingHelper.CreateChunkLevel(capacity, _loadingRadius, level, GroupSize);
         }
 
         _chunks = new ChunkData[poolSize];
@@ -49,7 +49,7 @@ public class Chunking : MonoBehaviour
 
         for (int i = 0; i < poolSize; i++)
         {
-            _chunks[i] = CreateChunkData();
+            _chunks[i] = ChunkingHelper.CreateChunkData(GroupSize);
             _freeChunks[i] = i;
         }
     }
@@ -139,12 +139,16 @@ public class Chunking : MonoBehaviour
                 chunkLevel.UsedChunksMap.Add(coord, index);
                 chunkLevel.AddedRemoved[chunkLevel.AddedRemovedCount++] = index;
 
-                SetChunkData(ref _chunks[index], transform.position, coord, gridScale);
+                ChunkingHelper.SetChunkData(ref _chunks[index], transform.position, coord, gridScale, TileSize);
             }
         }
     }
 
-    Vector2Int[] CalculateCircularCoords(int radius, int scale)
+}
+
+public static class ChunkingHelper
+{
+    public static Vector2Int[] CalculateCircularCoords(int radius, int scale)
     {
         int scaledRadius = Mathf.CeilToInt(((float)radius / (float)scale) + 1f);
 
@@ -159,22 +163,22 @@ public class Chunking : MonoBehaviour
         return coords.ToArray();
     }
 
-    int CalculateHierarchyLevels()
+    public static int CalculateHierarchyLevels( int loadingRadius, int groupSize)
     {
-        return Mathf.CeilToInt(Mathf.Log(_loadingRadius, GroupSize));
+        return Mathf.CeilToInt(Mathf.Log(loadingRadius, groupSize));
     }
 
-    int CalculatePoolSize(int circularCoordsCount, int hierarchyLevels)
+    public static int CalculatePoolSize(int circularCoordsCount, int hierarchyLevels, int groupSize)
     {
         int size = 0;
 
         for (int level = 0; level < hierarchyLevels; level++)
-            size += (circularCoordsCount + GroupSize * level) / (GroupSize * level + 1);
+            size += (circularCoordsCount + groupSize * level) / (groupSize * level + 1);
 
         return size;
     }
 
-    void SetChunkData(ref ChunkData chunk, Vector3 offset, Vector2Int gridCoord, int gridScale)
+    public static void SetChunkData(ref ChunkData chunk, Vector3 offset, Vector2Int gridCoord, int gridScale, Vector3Int tileSize)
     {
         chunk.IsVisible = false;
         chunk.Parent = -1;
@@ -182,25 +186,25 @@ public class Chunking : MonoBehaviour
 
         chunk.GridCoord = gridCoord;
 
-        chunk.Bounds.size = TileSize * gridScale;
+        chunk.Bounds.size = tileSize * gridScale;
         chunk.Bounds.center = new Vector3(
-            (chunk.GridCoord.x + 0.5f) * TileSize.x * gridScale + offset.x,
+            (chunk.GridCoord.x + 0.5f) * tileSize.x * gridScale + offset.x,
             offset.y,
-            (chunk.GridCoord.y + 0.5f) * TileSize.z * gridScale + offset.z
+            (chunk.GridCoord.y + 0.5f) * tileSize.z * gridScale + offset.z
         );
     }
 
-    ChunkData CreateChunkData()
+    public static ChunkData CreateChunkData(int groupSize)
     {
         ChunkData chunk = new();
 
         chunk.Bounds = new();
-        chunk.Children = new(GroupSize * GroupSize);
+        chunk.Children = new(groupSize * groupSize);
 
         return chunk;
     }
 
-    ChunkLevel CreateChunkLevel(int capacity, int hierarchyLevel)
+    public static ChunkLevel CreateChunkLevel(int capacity, int loadingRadius, int hierarchyLevel, int groupSize)
     {
         ChunkLevel chunkLevel = new();
 
@@ -212,9 +216,9 @@ public class Chunking : MonoBehaviour
         chunkLevel.UsedChunksCount = 0;
 
         chunkLevel.HierarchyLevel = hierarchyLevel;
-        chunkLevel.GridScale = (hierarchyLevel == 0) ? 1 : (int)Mathf.Pow(GroupSize, hierarchyLevel);
+        chunkLevel.GridScale = (hierarchyLevel == 0) ? 1 : (int)Mathf.Pow(groupSize, hierarchyLevel);
 
-        chunkLevel.CircularCoords = CalculateCircularCoords(_loadingRadius, chunkLevel.GridScale);
+        chunkLevel.CircularCoords = CalculateCircularCoords(loadingRadius, chunkLevel.GridScale);
 
         return chunkLevel;
     }
