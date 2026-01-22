@@ -7,9 +7,11 @@ using Unity.Collections;
 public class ChunkerDisplay : MonoBehaviour
 {
     [SerializeField, MinMaxSlider(0, 10)] Vector2Int _displayHierarchyLevels = new Vector2Int(0, 10);
-    [SerializeField] bool _showWorldBounds = false;
-    [SerializeField] bool _showCircularCoords = false;
+    
+    [SerializeField] bool _showHierarchyLevelChunks = false;
     [SerializeField] bool _showUsedChunks = false;
+    [SerializeField] bool _showCircularCoords = false;
+    [SerializeField] bool _showWorldBounds = false;
 
     Chunking _chunker;
 
@@ -18,13 +20,36 @@ public class ChunkerDisplay : MonoBehaviour
         _chunker = GetComponent<Chunking>();
     }
 
+    // void OnDrawGizmosSelected()
     void OnDrawGizmos()
     {
         if (!Application.isPlaying) return;
 
+        if (_showHierarchyLevelChunks) DrawHierarchyLevel();
         if (_showUsedChunks) DrawUsedChunks();
         if (_showWorldBounds) DrawWorldBounds();
         if (_showCircularCoords) DrawCircularCoords();
+    }
+
+    void DrawHierarchyLevel()
+    {
+        void Draw(int index)
+        {
+            ChunkData chunk = _chunker.GetChunk(index);
+            Gizmos.DrawWireCube(chunk.Bounds.center, chunk.Bounds.size);
+
+            for (int i = 0; i < chunk.Children.Length; i++)
+                Draw(chunk.Children[i]);
+        }
+
+        ChunkLevel root = _chunker.GetChunkLevel(_chunker.GetHierarchyLevels() - 1);
+        for (int i = 0; i < root.UsedChunksCount; i++)
+        {
+            UnityEngine.Random.InitState(i);
+            Gizmos.color = new Color(UnityEngine.Random.value, UnityEngine.Random.value, UnityEngine.Random.value);
+
+            Draw(root.UsedChunks[i]);
+        }
     }
 
     void DrawUsedChunks()
@@ -37,7 +62,7 @@ public class ChunkerDisplay : MonoBehaviour
 
             ChunkLevel chunkLevel = _chunker.GetChunkLevel(level);
             NativeArray<int> used = chunkLevel.UsedChunks;
-            
+
             for (int i = 0; i < chunkLevel.UsedChunksCount; i++)
             {
                 ChunkData chunk = _chunker.GetChunk(used[i]);
