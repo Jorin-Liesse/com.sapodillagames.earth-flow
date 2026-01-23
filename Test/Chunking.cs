@@ -1,10 +1,9 @@
 using UnityEngine;
 using Unity.Collections;
-using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
 using System;
 
-unsafe public class Chunking : MonoBehaviour
+public class Chunking : MonoBehaviour
 {
     public int2 GridSize = new(10000, 10000);
     public int3 TileSize = new(10, 1, 10);
@@ -16,16 +15,9 @@ unsafe public class Chunking : MonoBehaviour
     Transform _cameraTransform;
     int _loadingRadius;
 
-    [NativeDisableContainerSafetyRestriction]
     NativeArray<ChunkLevel> _chunkLevels;
-    ChunkLevel* _chunkLevelsPtr;
-
-    [NativeDisableContainerSafetyRestriction]
     NativeArray<ChunkData> _chunks;
-    ChunkData* _chunksPtr;
-
     NativeArray<int> _freeChunks;
-    int* _freeChunksPtr;
     int _freeChunksCount;
 
     int _hierarchyLevels;
@@ -41,7 +33,7 @@ unsafe public class Chunking : MonoBehaviour
         _mainCamera = Camera.main;
         _cameraTransform = _mainCamera.transform;
         _loadingRadius = ViewDistance + BufferDistance;
-        _lastPlayerChunkCoord = new int2(int.MinValue, int.MinValue);
+        _lastPlayerChunkCoord = new(int.MinValue, int.MinValue);
 
         _hierarchyLevels = ChunkingHelper.CalculateHierarchyLevels(_loadingRadius, GroupSize);
 
@@ -64,10 +56,6 @@ unsafe public class Chunking : MonoBehaviour
             _chunks[i] = ChunkingHelper.CreateChunkData(GroupSize);
             _freeChunks[i] = i;
         }
-
-        _chunkLevelsPtr = (ChunkLevel*)_chunkLevels.GetUnsafePtr();
-        _chunksPtr = (ChunkData*)_chunks.GetUnsafePtr();
-        _freeChunksPtr = (int*)_freeChunks.GetUnsafePtr();
     }
 
     void OnDestroy()
@@ -89,10 +77,6 @@ unsafe public class Chunking : MonoBehaviour
         }
 
         if (_freeChunks.IsCreated) _freeChunks.Dispose();
-
-        _chunksPtr = null;
-        _chunkLevelsPtr = null;
-        _freeChunksPtr = null;
     }
 
     void Update()
@@ -100,25 +84,31 @@ unsafe public class Chunking : MonoBehaviour
         _playerChunkCoord.x = (int)math.floor((_cameraTransform.position.x - transform.position.x) / TileSize.x);
         _playerChunkCoord.y = (int)math.floor((_cameraTransform.position.z - transform.position.z) / TileSize.z);
 
-        // if (math.all(_playerChunkCoord == _lastPlayerChunkCoord)) return;
+        if (math.all(_playerChunkCoord == _lastPlayerChunkCoord)) return;
 
-        FreeInactiveChunks();
+        FindChunksToRemove();
+        RemoveChunks();
         CleanRelations();
 
-        ActivateNewChunks();
-        AddRelations();
+        FindChunksToAdd();
+        AddChunks();
+        BuildRelations();
 
         _lastPlayerChunkCoord = _playerChunkCoord;
     }
 
-    void FreeInactiveChunks()
+    void FindChunksToRemove()
     {
         for (int levelIndex = 0; levelIndex < _hierarchyLevels; levelIndex++)
-            _chunkLevelsPtr[levelIndex].AddedRemovedCount = 0;
+        {
+            ChunkLevel level = _chunkLevels[levelIndex];
+            level.RemovedChunksCount = 0;
+            _chunkLevels[levelIndex] = level;
+        }
 
         for (int level = 0; level < _hierarchyLevels; level++)
         {
-            ref ChunkLevel chunkLevel = ref _chunkLevelsPtr[level];
+            ChunkLevel chunkLevel = _chunkLevels[level];
             int gridScale = chunkLevel.GridScale;
 
             int radiusGrid = (int)math.ceil((float)_loadingRadius / gridScale + 1f);
@@ -127,37 +117,96 @@ unsafe public class Chunking : MonoBehaviour
             float2 playerGridF = (float2)_playerChunkCoord / gridScale - 0.5f;
             int2 playerGrid = new((int)math.round(playerGridF.x), (int)math.round(playerGridF.y));
 
-            int* usedChunks = (int*)chunkLevel.UsedChunks.GetUnsafePtr();
-
             for (int i = chunkLevel.UsedChunksCount - 1; i >= 0; i--)
             {
-                int index = usedChunks[i];
-                ref ChunkData chunk = ref _chunksPtr[index];
+                int chunkIndex = chunkLevel.UsedChunks[i];
+                ChunkData chunk = _chunks[chunkIndex];
 
                 int2 delta = chunk.GridCoord - playerGrid;
                 int distSqr = delta.x * delta.x + delta.y * delta.y;
 
                 if (distSqr < radiusGridSqr) continue;
 
-                chunkLevel.UsedChunksMap.Remove(chunk.GridCoord);
-                usedChunks[i] = usedChunks[--chunkLevel.UsedChunksCount];
-                _freeChunksPtr[_freeChunksCount++] = index;
-                int* addedRemoved = (int*)chunkLevel.AddedRemoved.GetUnsafePtr();
-                addedRemoved[chunkLevel.AddedRemovedCount++] = index;
+                chunkLevel.RemovedChunks[chunkLevel.RemovedChunksCount++] = (chunkIndex, i);
             }
+
+            _chunkLevels[level] = chunkLevel;
         }
     }
 
-    void ActivateNewChunks()
+    void RemoveChunks()
+    {
+        for (int level = 0; level < _hierarchyLevels; level++)
+        {
+            ChunkLevel chunkLevel = _chunkLevels[level];
+
+            for (int i = 0; i < chunkLevel.RemovedChunksCount; i++)
+            {
+                int chunkIndex = chunkLevel.RemovedChunks[i].chunksIndex;
+                int usedIndex = chunkLevel.RemovedChunks[i].usedIndex;
+                ChunkData chunk = _chunks[chunkIndex];
+
+                chunkLevel.UsedChunksMap.Remove(chunk.GridCoord);
+                chunkLevel.UsedChunks[usedIndex] = chunkLevel.UsedChunks[--chunkLevel.UsedChunksCount];
+                _freeChunks[_freeChunksCount++] = chunkIndex;
+            }
+
+            _chunkLevels[level] = chunkLevel;
+        }
+    }
+    
+    void CleanRelations()
+    {
+        for (int level = 0; level < _hierarchyLevels; level++)
+        {
+            ChunkLevel chunkLevel = _chunkLevels[level];
+
+            for (int i = 0; i < chunkLevel.RemovedChunksCount; i++)
+            {
+                int chunkIndex = chunkLevel.RemovedChunks[i].chunksIndex;
+                ChunkData chunk = _chunks[chunkIndex];
+
+                if (chunk.Parent != -1)
+                {
+                    int parentIndex = chunk.Parent;
+                    ChunkData parent = _chunks[parentIndex];
+
+                    int childPos = parent.Children.IndexOf(chunkIndex);
+                    if (childPos != -1)
+                        parent.Children.RemoveAtSwapBack(childPos);
+
+                    chunk.Parent = -1;
+
+                    _chunks[parentIndex] = parent;
+                }
+
+                for (int c = 0; c < chunk.Children.Length; c++)
+                {
+                    int childIndex = chunk.Children[c];
+                    ChunkData child = _chunks[childIndex];
+                    child.Parent = -1;
+                    _chunks[childIndex] = child;
+                }
+                chunk.Children.Clear();
+                _chunks[chunkIndex] = chunk;
+            }
+
+            _chunkLevels[level] = chunkLevel;
+        }
+    }
+
+    void FindChunksToAdd()
     {
         for (int levelIndex = 0; levelIndex < _hierarchyLevels; levelIndex++)
-            _chunkLevelsPtr[levelIndex].AddedRemovedCount = 0;
-
-        Vector3 offset = transform.position;
+        {
+            ChunkLevel level = _chunkLevels[levelIndex];
+            level.AddedChunksCount = 0;
+            _chunkLevels[levelIndex] = level;
+        }
 
         for (int level = 0; level < _hierarchyLevels; level++)
         {
-            ref ChunkLevel chunkLevel = ref _chunkLevelsPtr[level];
+            ChunkLevel chunkLevel = _chunkLevels[level];
             int gridScale = chunkLevel.GridScale;
 
             int radiusGrid = (int)math.ceil((float)_loadingRadius / gridScale + 1);
@@ -166,74 +215,60 @@ unsafe public class Chunking : MonoBehaviour
             float2 playerGridF = (float2)_playerChunkCoord / gridScale - 0.5f;
             int2 playerGrid = new((int)math.round(playerGridF.x), (int)math.round(playerGridF.y));
 
-            int* usedChunks = (int*)chunkLevel.UsedChunks.GetUnsafePtr();
-            int* addedRemoved = (int*)chunkLevel.AddedRemoved.GetUnsafePtr();
-            int2* circularCoords = (int2*)chunkLevel.CircularCoords.GetUnsafeReadOnlyPtr();
-
             for (int i = 0; i < chunkLevel.CircularCoords.Length; i++)
             {
-                int2 coord = circularCoords[i] + playerGrid;
+                int2 coord = chunkLevel.CircularCoords[i] + playerGrid;
                 int2 delta = coord - playerGrid;
                 int distSqr = delta.x * delta.x + delta.y * delta.y;
 
                 if (distSqr >= radiusGridSqr) continue;
                 if (chunkLevel.UsedChunksMap.ContainsKey(coord)) continue;
                 if (_freeChunksCount <= 0) break;
-
-                int index = _freeChunksPtr[--_freeChunksCount];
-                usedChunks[chunkLevel.UsedChunksCount++] = index;
-                chunkLevel.UsedChunksMap.Add(coord, index);
-                addedRemoved[chunkLevel.AddedRemovedCount++] = index;
-
-                ref ChunkData chunk = ref _chunksPtr[index];
-                ChunkingHelper.SetChunkData(ref chunk, offset, coord, gridScale, TileSize);
+                
+                chunkLevel.AddedChunks[chunkLevel.AddedChunksCount++] = coord;
             }
+
+            _chunkLevels[level] = chunkLevel;
         }
     }
 
-    void CleanRelations()
+    void AddChunks()
     {
+        Vector3 offset = transform.position;
+
         for (int level = 0; level < _hierarchyLevels; level++)
         {
-            ref ChunkLevel chunkLevel = ref _chunkLevelsPtr[level];
-            int* addedRemoved = (int*)chunkLevel.AddedRemoved.GetUnsafePtr();
+            ChunkLevel chunkLevel = _chunkLevels[level];
+            int gridScale = chunkLevel.GridScale;
 
-            for (int i = 0; i < chunkLevel.AddedRemovedCount; i++)
+            for (int i = 0; i < chunkLevel.AddedChunksCount; i++)
             {
-                int chunkIndex = addedRemoved[i];
-                ref ChunkData chunk = ref _chunksPtr[chunkIndex];
+                int2 coord = chunkLevel.AddedChunks[i];
 
-                if (chunk.Parent != -1)
-                {
-                    ref ChunkData parent = ref _chunksPtr[chunk.Parent];
-                    parent.Children.RemoveAtSwapBack(parent.Children.IndexOf(chunkIndex));
-                    chunk.Parent = -1;
-                }
+                int index = _freeChunks[--_freeChunksCount];
+                chunkLevel.UsedChunks[chunkLevel.UsedChunksCount++] = index;
+                chunkLevel.UsedChunksMap.Add(coord, index);
 
-                for (int c = 0; c < chunk.Children.Length; c++)
-                {
-                    int childIndex = chunk.Children[c];
-                    ref ChunkData child = ref _chunksPtr[childIndex];
-                    child.Parent = -1;
-                }
-                chunk.Children.Clear();
+                ChunkData chunk = _chunks[index];
+                ChunkingHelper.SetChunkData(ref chunk, offset, coord, gridScale, TileSize);
+                _chunks[index] = chunk;
             }
+
+            _chunkLevels[level] = chunkLevel;
         }
     }
 
-    void AddRelations()
+    void BuildRelations()
     {
         for (int level = 0; level < _hierarchyLevels - 1; level++)
         {
-            ref ChunkLevel currentLevel = ref _chunkLevelsPtr[level];
-            ref ChunkLevel parentLevel = ref _chunkLevelsPtr[level + 1];
+            ChunkLevel currentLevel = _chunkLevels[level];
+            ChunkLevel parentLevel = _chunkLevels[level + 1];
 
-            int* addedRemoved = (int*)currentLevel.AddedRemoved.GetUnsafePtr();
-
-            for (int i = 0; i < currentLevel.AddedRemovedCount; i++)
+            for (int i = 0; i < currentLevel.AddedChunksCount; i++)
             {
-                int chunkIndex = addedRemoved[i];
-                ref ChunkData chunk = ref _chunksPtr[chunkIndex];
+                int chunkIndex = currentLevel.UsedChunksMap[currentLevel.AddedChunks[i]];
+                ChunkData chunk = _chunks[chunkIndex];
 
                 int2 parentGridCoord = new(
                     (int)math.floor((float)chunk.GridCoord.x / GroupSize),
@@ -242,10 +277,13 @@ unsafe public class Chunking : MonoBehaviour
 
                 if (parentLevel.UsedChunksMap.TryGetValue(parentGridCoord, out int parentIndex))
                 {
-                    ref ChunkData parent = ref _chunksPtr[parentIndex];
+                    ChunkData parent = _chunks[parentIndex];
 
                     chunk.Parent = parentIndex;
                     parent.Children.Add(chunkIndex);
+
+                    _chunks[parentIndex] = parent;
+                    _chunks[chunkIndex] = chunk;
                 }
             }
         }
@@ -267,7 +305,7 @@ public static class ChunkingHelper
             {
                 float distSqr = (x + 0.5f) * (x + 0.5f) + (y + 0.5f) * (y + 0.5f);
                 if (distSqr <= radiusSqr)
-                    coords.Add(new int2(x, y));
+                    coords.Add(new(x, y));
             }
         }
 
@@ -324,8 +362,10 @@ public static class ChunkingHelper
             CircularCoords = circularCoords,
             UsedChunks = new(capacity, Allocator.Persistent),
             UsedChunksMap = new(capacity, Allocator.Persistent),
-            AddedRemoved = new(capacity, Allocator.Persistent),
-            AddedRemovedCount = 0,
+            RemovedChunks = new(capacity, Allocator.Persistent),
+            AddedChunks = new(capacity, Allocator.Persistent),
+            RemovedChunksCount = 0,
+            AddedChunksCount = 0,
             UsedChunksCount = 0
         };
     }
@@ -334,19 +374,27 @@ public static class ChunkingHelper
 public struct ChunkLevel : IDisposable
 {
     public NativeHashMap<int2, int> UsedChunksMap;
+
     public NativeArray<int> UsedChunks;
     public int UsedChunksCount;
-    public NativeArray<int> AddedRemoved;
-    public int AddedRemovedCount;
+
+    public NativeArray<(int chunksIndex, int usedIndex)> RemovedChunks;
+    public int RemovedChunksCount;
+
+    public NativeArray<int2> AddedChunks;
+    public int AddedChunksCount;
+    
     public int HierarchyLevel;
     public int GridScale;
+
     public NativeArray<int2> CircularCoords;
 
     public void Dispose()
     {
         if (UsedChunksMap.IsCreated) UsedChunksMap.Dispose();
         if (UsedChunks.IsCreated) UsedChunks.Dispose();
-        if (AddedRemoved.IsCreated) AddedRemoved.Dispose();
+        if (RemovedChunks.IsCreated) RemovedChunks.Dispose();
+        if (AddedChunks.IsCreated) AddedChunks.Dispose();
         if (CircularCoords.IsCreated) CircularCoords.Dispose();
     }
 }
