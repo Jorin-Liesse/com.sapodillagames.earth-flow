@@ -5,6 +5,8 @@ using System;
 
 public class Chunking : MonoBehaviour
 {
+    const float TOLERANCE = 0.01f;
+
     public int2 GridSize = new(10000, 10000);
     public int3 TileSize = new(10, 1, 10);
     public int ViewDistance = 100;
@@ -13,7 +15,11 @@ public class Chunking : MonoBehaviour
 
     Camera _mainCamera;
     Transform _cameraTransform;
-    int _loadingRadius;
+    Plane[] _frustumPlanes;
+    int _loadingDistance;
+
+    int _viewDistanceSqr;
+    int _loadingDistanceSqr;
 
     NativeArray<ChunkLevel> _chunkLevels;
     NativeArray<ChunkData> _chunks;
@@ -24,25 +30,30 @@ public class Chunking : MonoBehaviour
     int2 _playerChunkCoord;
     int2 _lastPlayerChunkCoord;
 
-    public ChunkLevel GetChunkLevel(int level) => _chunkLevels[level];
-    public int GetHierarchyLevels() => _hierarchyLevels;
-    public ChunkData GetChunk(int index) => _chunks[index];
+    Vector3 _lastCameraPosition;
+    Quaternion _lastCameraRotation;
 
     void Awake()
     {
         _mainCamera = Camera.main;
         _cameraTransform = _mainCamera.transform;
-        _loadingRadius = ViewDistance + BufferDistance;
+        _frustumPlanes = new Plane[6];
+        _loadingDistance = ViewDistance + BufferDistance;
         _lastPlayerChunkCoord = new(int.MinValue, int.MinValue);
+        _lastCameraPosition = _cameraTransform.position + Vector3.one * 1000f;
+        _lastCameraRotation = _cameraTransform.rotation * Quaternion.Euler(10f, 10f, 10f);
 
-        _hierarchyLevels = ChunkingHelper.CalculateHierarchyLevels(_loadingRadius, GroupSize);
+        _viewDistanceSqr = ViewDistance * ViewDistance;
+        _loadingDistanceSqr = _loadingDistance * _loadingDistance;
+
+        _hierarchyLevels = ChunkingHelper.CalculateHierarchyLevels(_loadingDistance, GroupSize);
 
         int poolSize = 0;
         _chunkLevels = new(_hierarchyLevels, Allocator.Persistent);
 
         for (int level = 0; level < _hierarchyLevels; level++)
         {
-            ChunkLevel chunkLevel = ChunkingHelper.CreateChunkLevel(_loadingRadius, level, GroupSize);
+            ChunkLevel chunkLevel = ChunkingHelper.CreateChunkLevel(_loadingDistance, level, GroupSize);
             _chunkLevels[level] = chunkLevel;
             poolSize += chunkLevel.UsedChunks.Length;
         }
@@ -81,6 +92,12 @@ public class Chunking : MonoBehaviour
 
     void Update()
     {
+        ChunkingUpdate();
+        CullingUpdate();
+    }
+
+    void ChunkingUpdate()
+    {
         _playerChunkCoord.x = (int)math.floor((_cameraTransform.position.x - transform.position.x) / TileSize.x);
         _playerChunkCoord.y = (int)math.floor((_cameraTransform.position.z - transform.position.z) / TileSize.z);
 
@@ -97,6 +114,24 @@ public class Chunking : MonoBehaviour
         _lastPlayerChunkCoord = _playerChunkCoord;
     }
 
+    void CullingUpdate()
+    {
+        bool rotationChanged = Quaternion.Angle(_cameraTransform.rotation, _lastCameraRotation) >= TOLERANCE;
+        bool positionChanged = Vector3.SqrMagnitude(_cameraTransform.position - _lastCameraPosition) >= TOLERANCE;
+
+        if (!rotationChanged && !positionChanged) return;
+
+        GeometryUtility.CalculateFrustumPlanes(_mainCamera, _frustumPlanes);
+
+        int rootLevel = _hierarchyLevels - 1;
+        ChunkLevel root = _chunkLevels[rootLevel];
+        for (int i = 0; i < root.UsedChunksCount; i++)
+            Culling(root.UsedChunks[i], rootLevel);
+
+        _lastCameraPosition = _cameraTransform.position;
+        _lastCameraRotation = _cameraTransform.rotation;
+    }
+
     void FindChunksToRemove()
     {
         for (int levelIndex = 0; levelIndex < _hierarchyLevels; levelIndex++)
@@ -111,7 +146,7 @@ public class Chunking : MonoBehaviour
             ChunkLevel chunkLevel = _chunkLevels[level];
             int gridScale = chunkLevel.GridScale;
 
-            int radiusGrid = (int)math.ceil((float)_loadingRadius / gridScale + 1f);
+            int radiusGrid = (int)math.ceil((float)_loadingDistance / gridScale + 1f);
             int radiusGridSqr = radiusGrid * radiusGrid;
 
             float2 playerGridF = (float2)_playerChunkCoord / gridScale - 0.5f;
@@ -154,7 +189,7 @@ public class Chunking : MonoBehaviour
             _chunkLevels[level] = chunkLevel;
         }
     }
-    
+
     void CleanRelations()
     {
         for (int level = 0; level < _hierarchyLevels; level++)
@@ -209,11 +244,16 @@ public class Chunking : MonoBehaviour
             ChunkLevel chunkLevel = _chunkLevels[level];
             int gridScale = chunkLevel.GridScale;
 
-            int radiusGrid = (int)math.ceil((float)_loadingRadius / gridScale + 1);
+            int radiusGrid = (int)math.ceil((float)_loadingDistance / gridScale + 1);
             int radiusGridSqr = radiusGrid * radiusGrid;
 
             float2 playerGridF = (float2)_playerChunkCoord / gridScale - 0.5f;
             int2 playerGrid = new((int)math.round(playerGridF.x), (int)math.round(playerGridF.y));
+
+            int2 halfGridSize = new(
+                (GridSize.x / (gridScale * 2)) + 1,
+                (GridSize.y / (gridScale * 2)) + 1
+            );
 
             for (int i = 0; i < chunkLevel.CircularCoords.Length; i++)
             {
@@ -222,9 +262,10 @@ public class Chunking : MonoBehaviour
                 int distSqr = delta.x * delta.x + delta.y * delta.y;
 
                 if (distSqr >= radiusGridSqr) continue;
+                if (coord.x < -halfGridSize.x || coord.x >= halfGridSize.x || coord.y < -halfGridSize.y || coord.y >= halfGridSize.y) continue;
                 if (chunkLevel.UsedChunksMap.ContainsKey(coord)) continue;
                 if (_freeChunksCount <= 0) break;
-                
+
                 chunkLevel.AddedChunks[chunkLevel.AddedChunksCount++] = coord;
             }
 
@@ -246,6 +287,7 @@ public class Chunking : MonoBehaviour
                 int2 coord = chunkLevel.AddedChunks[i];
 
                 int index = _freeChunks[--_freeChunksCount];
+
                 chunkLevel.UsedChunks[chunkLevel.UsedChunksCount++] = index;
                 chunkLevel.UsedChunksMap.Add(coord, index);
 
@@ -288,8 +330,46 @@ public class Chunking : MonoBehaviour
             }
         }
     }
-}
 
+    void Culling(int index, int level)
+    {
+        ChunkData chunk = _chunks[index];
+        chunk.IsVisible = !(DistanceCull(chunk, level) || FrustumCull(chunk, level) || OcclusionCull(chunk, level));
+        _chunks[index] = chunk;
+
+        if (!chunk.IsVisible) return;
+
+        for (int i = 0; i < chunk.Children.Length; i++)
+            Culling(chunk.Children[i], level - 1);
+    }
+
+    bool DistanceCull(ChunkData chunk, int level)
+    {
+        int gridScale = _chunkLevels[level].GridScale;
+
+        int2 _playerChunkCoordLocal = new(
+            (_playerChunkCoord.x / gridScale) + 1,
+            (_playerChunkCoord.y / gridScale) + 1
+        );
+
+        int2 diff = chunk.GridCoord - _playerChunkCoordLocal;
+        return diff.x * diff.x + diff.y * diff.y > _viewDistanceSqr;
+    }
+
+    bool FrustumCull(ChunkData chunk, int level)
+    {
+        return !GeometryUtility.TestPlanesAABB(_frustumPlanes, chunk.Bounds);
+    }
+
+    bool OcclusionCull(ChunkData chunk, int level)
+    {
+        return false;
+    }
+
+    public ChunkLevel GetChunkLevel(int level) => _chunkLevels[level];
+    public int GetHierarchyLevels() => _hierarchyLevels;
+    public ChunkData GetChunk(int index) => _chunks[index];
+}
 public static class ChunkingHelper
 {
     public static NativeArray<int2> CalculateCircularCoords(int radius, int scale, Allocator allocator)
@@ -383,7 +463,7 @@ public struct ChunkLevel : IDisposable
 
     public NativeArray<int2> AddedChunks;
     public int AddedChunksCount;
-    
+
     public int HierarchyLevel;
     public int GridScale;
 

@@ -7,7 +7,8 @@ using Unity.Collections;
 public class ChunkerDisplay : MonoBehaviour
 {
     [SerializeField, MinMaxSlider(0, 10)] Vector2Int _displayHierarchyLevels = new Vector2Int(0, 10);
-    
+
+    [SerializeField] bool _showVisibleChunks = false;
     [SerializeField] bool _showHierarchyLevelChunks = false;
     [SerializeField] bool _showUsedChunks = false;
     [SerializeField] bool _showCircularCoords = false;
@@ -25,30 +26,62 @@ public class ChunkerDisplay : MonoBehaviour
     {
         if (!Application.isPlaying) return;
 
+        if (_showVisibleChunks) DrawVisibleChunks();
         if (_showHierarchyLevelChunks) DrawHierarchyLevel();
         if (_showUsedChunks) DrawUsedChunks();
         if (_showWorldBounds) DrawWorldBounds();
         if (_showCircularCoords) DrawCircularCoords();
     }
 
-    void DrawHierarchyLevel()
+    void DrawVisibleChunks()
     {
-        void Draw(int index)
+        void Draw(int index, int level)
         {
+            if (level < _displayHierarchyLevels.x) return;
+
             ChunkData chunk = _chunker.GetChunk(index);
-            Gizmos.DrawWireCube(chunk.Bounds.center, chunk.Bounds.size);
+
+            if (level <= _displayHierarchyLevels.y)
+            {
+                Gizmos.color = chunk.IsVisible ? Color.green : Color.blue;
+                Gizmos.DrawWireCube(chunk.Bounds.center, chunk.Bounds.size);
+            }
+
+            if (!chunk.IsVisible) return;
 
             for (int i = 0; i < chunk.Children.Length; i++)
-                Draw(chunk.Children[i]);
+                Draw(chunk.Children[i], level - 1);
         }
 
-        ChunkLevel root = _chunker.GetChunkLevel(_chunker.GetHierarchyLevels() - 1);
+        int rootLevel = _chunker.GetHierarchyLevels() - 1;
+        ChunkLevel root = _chunker.GetChunkLevel(rootLevel);
+
+        for (int i = 0; i < root.UsedChunksCount; i++)
+            Draw(root.UsedChunks[i], rootLevel);
+    }
+
+    void DrawHierarchyLevel()
+    {
+        void Draw(int index, int level)
+        {
+            if (level < _displayHierarchyLevels.x) return;
+
+            ChunkData chunk = _chunker.GetChunk(index);
+
+            if (level <= _displayHierarchyLevels.y) Gizmos.DrawWireCube(chunk.Bounds.center, chunk.Bounds.size);
+
+            for (int i = 0; i < chunk.Children.Length; i++)
+                Draw(chunk.Children[i], level - 1);
+        }
+
+        int rootLevel = _chunker.GetHierarchyLevels() - 1;
+        ChunkLevel root = _chunker.GetChunkLevel(rootLevel);
+
         for (int i = 0; i < root.UsedChunksCount; i++)
         {
             UnityEngine.Random.InitState(i);
-            Gizmos.color = new Color(UnityEngine.Random.value, UnityEngine.Random.value, UnityEngine.Random.value);
-
-            Draw(root.UsedChunks[i]);
+            Gizmos.color = new(UnityEngine.Random.value, UnityEngine.Random.value, UnityEngine.Random.value);
+            Draw(root.UsedChunks[i], rootLevel);
         }
     }
 
