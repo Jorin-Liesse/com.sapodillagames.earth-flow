@@ -1,7 +1,6 @@
 using UnityEngine;
 using NaughtyAttributes;
 using Unity.Mathematics;
-using Unity.Collections;
 
 [RequireComponent(typeof(Chunking))]
 public class ChunkerDisplay : MonoBehaviour
@@ -21,7 +20,6 @@ public class ChunkerDisplay : MonoBehaviour
         _chunker = GetComponent<Chunking>();
     }
 
-    // void OnDrawGizmosSelected()
     void OnDrawGizmos()
     {
         if (!Application.isPlaying) return;
@@ -39,25 +37,30 @@ public class ChunkerDisplay : MonoBehaviour
         {
             if (level < _displayHierarchyLevels.x) return;
 
-            ChunkData chunk = _chunker.GetChunk(index);
+            bool chunkIsVisible = _chunker.ChunksIsVisible[index];
+            AABB chunkBounds = _chunker.ChunksBounds[index];
 
             if (level <= _displayHierarchyLevels.y)
             {
-                Gizmos.color = chunk.IsVisible ? Color.green : Color.blue;
-                Gizmos.DrawWireCube(chunk.Bounds.center, chunk.Bounds.size);
+                Gizmos.color = chunkIsVisible ? Color.green : Color.blue;
+                Gizmos.DrawWireCube(chunkBounds.Center, chunkBounds.Extents * 2);
             }
 
-            if (!chunk.IsVisible) return;
+            if (!chunkIsVisible) return;
 
-            for (int i = 0; i < chunk.Children.Length; i++)
-                Draw(chunk.Children[i], level - 1);
+            if (_chunker.ChunksChildren.TryGetFirstValue(index, out int child, out var it))
+            {
+                do Draw(child, level - 1);
+                while (_chunker.ChunksChildren.TryGetNextValue(out child, ref it));
+            }
         }
 
-        int rootLevel = _chunker.GetHierarchyLevels() - 1;
-        ChunkLevel root = _chunker.GetChunkLevel(rootLevel);
+        int rootLevel = _chunker.HierarchyLevels - 1;
+        int startIndex = _chunker.LevelStartIndices[rootLevel];
+        int count = _chunker.LevelUsedChunksCount[rootLevel];
 
-        for (int i = 0; i < root.UsedChunksCount; i++)
-            Draw(root.UsedChunks[i], rootLevel);
+        for (int i = startIndex; i < startIndex + count; i++)
+            Draw(_chunker.LevelUsedChunks[i], rootLevel);
     }
 
     void DrawHierarchyLevel()
@@ -66,22 +69,28 @@ public class ChunkerDisplay : MonoBehaviour
         {
             if (level < _displayHierarchyLevels.x) return;
 
-            ChunkData chunk = _chunker.GetChunk(index);
+            AABB chunkBounds = _chunker.ChunksBounds[index];
 
-            if (level <= _displayHierarchyLevels.y) Gizmos.DrawWireCube(chunk.Bounds.center, chunk.Bounds.size);
+            if (level <= _displayHierarchyLevels.y)
+                Gizmos.DrawWireCube(chunkBounds.Center, chunkBounds.Extents * 2);
 
-            for (int i = 0; i < chunk.Children.Length; i++)
-                Draw(chunk.Children[i], level - 1);
+            if (_chunker.ChunksChildren.TryGetFirstValue(index, out int child, out var it))
+            {
+                do Draw(child, level - 1);
+                while (_chunker.ChunksChildren.TryGetNextValue(out child, ref it));
+            }
         }
 
-        int rootLevel = _chunker.GetHierarchyLevels() - 1;
-        ChunkLevel root = _chunker.GetChunkLevel(rootLevel);
+        int rootLevel = _chunker.HierarchyLevels - 1;
+        int startIndex = _chunker.LevelStartIndices[rootLevel];
+        int count = _chunker.LevelUsedChunksCount[rootLevel];
 
-        for (int i = 0; i < root.UsedChunksCount; i++)
+        for (int i = startIndex; i < startIndex + count; i++)
         {
             UnityEngine.Random.InitState(i);
-            Gizmos.color = new(UnityEngine.Random.value, UnityEngine.Random.value, UnityEngine.Random.value);
-            Draw(root.UsedChunks[i], rootLevel);
+            Gizmos.color = new Color(UnityEngine.Random.value, UnityEngine.Random.value, UnityEngine.Random.value);
+
+            Draw(_chunker.LevelUsedChunks[i], rootLevel);
         }
     }
 
@@ -89,17 +98,17 @@ public class ChunkerDisplay : MonoBehaviour
     {
         for (int level = _displayHierarchyLevels.x; level <= _displayHierarchyLevels.y; level++)
         {
-            if (level >= _chunker.GetHierarchyLevels()) break;
+            if (level >= _chunker.HierarchyLevels) break;
 
-            Gizmos.color = Color.Lerp(Color.red, Color.green, (float)level / _chunker.GetHierarchyLevels());
+            Gizmos.color = Color.Lerp(Color.red, Color.green, (float)level / _chunker.HierarchyLevels);
 
-            ChunkLevel chunkLevel = _chunker.GetChunkLevel(level);
-            NativeArray<int> used = chunkLevel.UsedChunks;
-
-            for (int i = 0; i < chunkLevel.UsedChunksCount; i++)
+            int startIndex = _chunker.LevelStartIndices[level];
+            int count = _chunker.LevelUsedChunksCount[level];
+            for (int i = startIndex; i < startIndex + count; i++)
             {
-                ChunkData chunk = _chunker.GetChunk(used[i]);
-                Gizmos.DrawWireCube(chunk.Bounds.center, chunk.Bounds.size);
+                int chunkIndex = _chunker.LevelUsedChunks[i];
+                AABB chunkBounds = _chunker.ChunksBounds[chunkIndex];
+                Gizmos.DrawWireCube(chunkBounds.Center, chunkBounds.Extents * 2);
             }
         }
     }
@@ -119,12 +128,10 @@ public class ChunkerDisplay : MonoBehaviour
     {
         for (int level = _displayHierarchyLevels.x; level <= _displayHierarchyLevels.y; level++)
         {
-            if (level >= _chunker.GetHierarchyLevels()) break;
+            if (level >= _chunker.HierarchyLevels) break;
 
-            Gizmos.color = Color.Lerp(Color.gray, Color.white, (float)level / _chunker.GetHierarchyLevels());
-
-            ChunkLevel chunkLevel = _chunker.GetChunkLevel(level);
-            float scale = chunkLevel.GridScale;
+            Gizmos.color = Color.Lerp(Color.gray, Color.white, (float)level / _chunker.HierarchyLevels);
+            float scale = _chunker.LevelGridScale[level];
 
             Vector3 offset = new(
                 transform.position.x + (0.5f * scale * _chunker.TileSize.x),
@@ -132,9 +139,11 @@ public class ChunkerDisplay : MonoBehaviour
                 transform.position.z + (0.5f * scale * _chunker.TileSize.z)
             );
 
-            for (int i = 0; i < chunkLevel.CircularCoords.Length; i++)
+            int startIndex = _chunker.LevelStartIndices[level];
+            int count = _chunker.LevelCircularCoordsCount[level];
+            for (int i = startIndex; i < startIndex + count; i++)
             {
-                int2 coord = chunkLevel.CircularCoords[i];
+                int2 coord = _chunker.LevelCircularCoords[i];
 
                 Vector3 center = new(
                     (coord.x * scale * _chunker.TileSize.x) + offset.x,

@@ -1,7 +1,8 @@
 using UnityEngine;
 using Unity.Collections;
 using Unity.Mathematics;
-using System;
+using Unity.Burst;
+using Unity.Jobs;
 
 public class Chunking : MonoBehaviour
 {
@@ -13,20 +14,40 @@ public class Chunking : MonoBehaviour
     public int BufferDistance = 1;
     public int GroupSize = 4;
 
+    [HideInInspector] public int HierarchyLevels;
+
+    [HideInInspector] public NativeParallelMultiHashMap<int, int> ChunksChildren;
+    [HideInInspector] public NativeArray<int> ChunksParent;
+    [HideInInspector] public NativeArray<int2> ChunksGridCoord;
+    [HideInInspector] public NativeArray<AABB> ChunksBounds;
+    [HideInInspector] public NativeArray<bool> ChunksIsVisible;
+
+    [HideInInspector] public NativeParallelHashMap<int3, int> LevelUsedChunksMap;
+    [HideInInspector] public NativeArray<int> LevelUsedChunks;
+    [HideInInspector] public NativeArray<int2> LevelCircularCoords;
+    [HideInInspector] public NativeArray<int> LevelUsedChunksCount;
+    [HideInInspector] public NativeArray<int> LevelCircularCoordsCount;
+    [HideInInspector] public NativeArray<int> LevelGridScale;
+    [HideInInspector] public NativeArray<int> LevelStartIndices;
+
+    NativeArray<(int chunksIndex, int usedIndex)> _levelRemovedChunks;
+    NativeArray<int> _levelRemovedChunksCount;
+    NativeArray<int2> _levelAddedChunks;
+    NativeArray<int> _levelAddedChunksCount;
+
+    NativeArray<int> _freeChunks;
+    int _freeChunksCount;
+
+    NativeArray<float4> _frustumFloat4s;
+    Plane[] _frustumPlanes;
+
     Camera _mainCamera;
     Transform _cameraTransform;
-    Plane[] _frustumPlanes;
     int _loadingDistance;
 
     int _viewDistanceSqr;
     int _loadingDistanceSqr;
 
-    NativeArray<ChunkLevel> _chunkLevels;
-    NativeArray<ChunkData> _chunks;
-    NativeArray<int> _freeChunks;
-    int _freeChunksCount;
-
-    int _hierarchyLevels;
     int2 _playerChunkCoord;
     int2 _lastPlayerChunkCoord;
 
@@ -37,7 +58,6 @@ public class Chunking : MonoBehaviour
     {
         _mainCamera = Camera.main;
         _cameraTransform = _mainCamera.transform;
-        _frustumPlanes = new Plane[6];
         _loadingDistance = ViewDistance + BufferDistance;
         _lastPlayerChunkCoord = new(int.MinValue, int.MinValue);
         _lastCameraPosition = _cameraTransform.position + Vector3.one * 1000f;
@@ -46,48 +66,87 @@ public class Chunking : MonoBehaviour
         _viewDistanceSqr = ViewDistance * ViewDistance;
         _loadingDistanceSqr = _loadingDistance * _loadingDistance;
 
-        _hierarchyLevels = ChunkingHelper.CalculateHierarchyLevels(_loadingDistance, GroupSize);
+        HierarchyLevels = CalculateHierarchyLevels(_loadingDistance, GroupSize);
 
+        LevelStartIndices = new(HierarchyLevels, Allocator.Persistent);
+        LevelGridScale = new(HierarchyLevels, Allocator.Persistent);
+        LevelUsedChunksCount = new(HierarchyLevels, Allocator.Persistent);
+        LevelCircularCoordsCount = new(HierarchyLevels, Allocator.Persistent);
+        _levelRemovedChunksCount = new(HierarchyLevels, Allocator.Persistent);
+        _levelAddedChunksCount = new(HierarchyLevels, Allocator.Persistent);
+
+        NativeList<int2> allCircularCoords = new(Allocator.Temp);
         int poolSize = 0;
-        _chunkLevels = new(_hierarchyLevels, Allocator.Persistent);
 
-        for (int level = 0; level < _hierarchyLevels; level++)
+        for (int level = 0; level < HierarchyLevels; level++)
         {
-            ChunkLevel chunkLevel = ChunkingHelper.CreateChunkLevel(_loadingDistance, level, GroupSize);
-            _chunkLevels[level] = chunkLevel;
-            poolSize += chunkLevel.UsedChunks.Length;
+            int gridScale = (level == 0) ? 1 : (int)math.pow(GroupSize, level);
+            NativeArray<int2> circularCoords = CalculateCircularCoords(_loadingDistance, gridScale, Allocator.Persistent);
+            int capacity = circularCoords.Length;
+
+            LevelGridScale[level] = gridScale;
+            allCircularCoords.AddRange(circularCoords);
+            LevelCircularCoordsCount[level] = circularCoords.Length;
+            LevelStartIndices[level] = poolSize;
+
+            poolSize += capacity;
+            circularCoords.Dispose();
         }
 
-        _chunks = new(poolSize, Allocator.Persistent);
+        LevelCircularCoords = new(poolSize, Allocator.Persistent);
+        allCircularCoords.AsArray().CopyTo(LevelCircularCoords);
+        allCircularCoords.Dispose();
+
+        LevelUsedChunksMap = new(poolSize, Allocator.Persistent);
+        LevelUsedChunks = new(poolSize, Allocator.Persistent);
+        _levelRemovedChunks = new(poolSize, Allocator.Persistent);
+        _levelAddedChunks = new(poolSize, Allocator.Persistent);
+
+        ChunksGridCoord = new(poolSize, Allocator.Persistent);
+        ChunksBounds = new(poolSize, Allocator.Persistent);
+        ChunksIsVisible = new(poolSize, Allocator.Persistent);
+        ChunksParent = new(poolSize, Allocator.Persistent);
+        ChunksChildren = new(poolSize * GroupSize * GroupSize, Allocator.Persistent);
+
         _freeChunks = new(poolSize, Allocator.Persistent);
         _freeChunksCount = poolSize;
 
+        _frustumFloat4s = new(6, Allocator.Persistent);
+        _frustumPlanes = new Plane[6];
+
         for (int i = 0; i < poolSize; i++)
         {
-            _chunks[i] = ChunkingHelper.CreateChunkData(GroupSize);
+            ChunksGridCoord[i] = new int2();
+            ChunksBounds[i] = new AABB();
+            ChunksIsVisible[i] = false;
+            ChunksParent[i] = -1;
             _freeChunks[i] = i;
         }
     }
 
     void OnDestroy()
     {
-        if (_chunks.IsCreated)
-        {
-            for (int i = 0; i < _chunks.Length; i++)
-                _chunks[i].Dispose();
+        LevelStartIndices.Dispose();
+        LevelGridScale.Dispose();
+        LevelCircularCoords.Dispose();
+        LevelUsedChunks.Dispose();
+        LevelUsedChunksMap.Dispose();
+        LevelUsedChunksCount.Dispose();
+        LevelCircularCoordsCount.Dispose();
 
-            _chunks.Dispose();
-        }
+        _levelRemovedChunks.Dispose();
+        _levelAddedChunks.Dispose();
+        _levelRemovedChunksCount.Dispose();
+        _levelAddedChunksCount.Dispose();
 
-        if (_chunkLevels.IsCreated)
-        {
-            for (int i = 0; i < _chunkLevels.Length; i++)
-                _chunkLevels[i].Dispose();
+        ChunksGridCoord.Dispose();
+        ChunksBounds.Dispose();
+        ChunksIsVisible.Dispose();
+        ChunksParent.Dispose();
+        ChunksChildren.Dispose();
 
-            _chunkLevels.Dispose();
-        }
-
-        if (_freeChunks.IsCreated) _freeChunks.Dispose();
+        _freeChunks.Dispose();
+        _frustumFloat4s.Dispose();
     }
 
     void Update()
@@ -122,11 +181,30 @@ public class Chunking : MonoBehaviour
         if (!rotationChanged && !positionChanged) return;
 
         GeometryUtility.CalculateFrustumPlanes(_mainCamera, _frustumPlanes);
+        for (int i = 0; i < 6; i++)
+        {
+            Plane p = _frustumPlanes[i];
+            _frustumFloat4s[i] = new float4(p.normal.x, p.normal.y, p.normal.z, p.distance);
+        }
 
-        int rootLevel = _hierarchyLevels - 1;
-        ChunkLevel root = _chunkLevels[rootLevel];
-        for (int i = 0; i < root.UsedChunksCount; i++)
-            Culling(root.UsedChunks[i], rootLevel);
+        // int rootLevel = HierarchyLevels - 1;
+        // for (int i = 0; i < LevelUsedChunksCount[rootLevel]; i++)
+        //     Culling(LevelUsedChunks[LevelStartIndices[rootLevel] + i], rootLevel);
+
+        CullingJob job = new()
+        {
+            ChunksBounds = ChunksBounds,
+            ChunksGridCoord = ChunksGridCoord,
+            LevelGridScale = LevelGridScale,
+            PlayerChunkX = _playerChunkCoord.x,
+            PlayerChunkY = _playerChunkCoord.y,
+            ViewDistanceSqr = _viewDistanceSqr,
+            FrustumPlanes = _frustumFloat4s,
+            ChunksIsVisible = ChunksIsVisible
+        };
+
+        JobHandle handle = job.Schedule(LevelUsedChunks.Length, 64);
+        handle.Complete();
 
         _lastCameraPosition = _cameraTransform.position;
         _lastCameraRotation = _cameraTransform.rotation;
@@ -134,17 +212,13 @@ public class Chunking : MonoBehaviour
 
     void FindChunksToRemove()
     {
-        for (int levelIndex = 0; levelIndex < _hierarchyLevels; levelIndex++)
-        {
-            ChunkLevel level = _chunkLevels[levelIndex];
-            level.RemovedChunksCount = 0;
-            _chunkLevels[levelIndex] = level;
-        }
+        for (int levelIndex = 0; levelIndex < HierarchyLevels; levelIndex++)
+            _levelRemovedChunksCount[levelIndex] = 0;
 
-        for (int level = 0; level < _hierarchyLevels; level++)
+        for (int level = 0; level < HierarchyLevels; level++)
         {
-            ChunkLevel chunkLevel = _chunkLevels[level];
-            int gridScale = chunkLevel.GridScale;
+            int gridScale = LevelGridScale[level];
+            int startIndex = LevelStartIndices[level];
 
             int radiusGrid = (int)math.ceil((float)_loadingDistance / gridScale + 1f);
             int radiusGridSqr = radiusGrid * radiusGrid;
@@ -152,97 +226,84 @@ public class Chunking : MonoBehaviour
             float2 playerGridF = (float2)_playerChunkCoord / gridScale - 0.5f;
             int2 playerGrid = new((int)math.round(playerGridF.x), (int)math.round(playerGridF.y));
 
-            for (int i = chunkLevel.UsedChunksCount - 1; i >= 0; i--)
+            for (int i = LevelUsedChunksCount[level] - 1; i >= 0; i--)
             {
-                int chunkIndex = chunkLevel.UsedChunks[i];
-                ChunkData chunk = _chunks[chunkIndex];
+                int chunkIndex = LevelUsedChunks[startIndex + i];
+                int2 chunkGridCoord = ChunksGridCoord[chunkIndex];
 
-                int2 delta = chunk.GridCoord - playerGrid;
+                int2 delta = chunkGridCoord - playerGrid;
                 int distSqr = delta.x * delta.x + delta.y * delta.y;
 
                 if (distSqr < radiusGridSqr) continue;
 
-                chunkLevel.RemovedChunks[chunkLevel.RemovedChunksCount++] = (chunkIndex, i);
+                _levelRemovedChunks[startIndex + _levelRemovedChunksCount[level]++] = (chunkIndex, i);
             }
-
-            _chunkLevels[level] = chunkLevel;
         }
     }
 
     void RemoveChunks()
     {
-        for (int level = 0; level < _hierarchyLevels; level++)
+        for (int level = 0; level < HierarchyLevels; level++)
         {
-            ChunkLevel chunkLevel = _chunkLevels[level];
+            int startIndex = LevelStartIndices[level];
 
-            for (int i = 0; i < chunkLevel.RemovedChunksCount; i++)
+            for (int i = 0; i < _levelRemovedChunksCount[level]; i++)
             {
-                int chunkIndex = chunkLevel.RemovedChunks[i].chunksIndex;
-                int usedIndex = chunkLevel.RemovedChunks[i].usedIndex;
-                ChunkData chunk = _chunks[chunkIndex];
+                int chunkIndex = _levelRemovedChunks[startIndex + i].chunksIndex;
+                int usedIndex = _levelRemovedChunks[startIndex + i].usedIndex;
+                int2 chunkGridCoord = ChunksGridCoord[chunkIndex];
 
-                chunkLevel.UsedChunksMap.Remove(chunk.GridCoord);
-                chunkLevel.UsedChunks[usedIndex] = chunkLevel.UsedChunks[--chunkLevel.UsedChunksCount];
+                LevelUsedChunksMap.Remove(new(level, chunkGridCoord.x, chunkGridCoord.y));
+                LevelUsedChunks[startIndex + usedIndex] = LevelUsedChunks[startIndex + --LevelUsedChunksCount[level]];
                 _freeChunks[_freeChunksCount++] = chunkIndex;
             }
-
-            _chunkLevels[level] = chunkLevel;
         }
     }
 
     void CleanRelations()
     {
-        for (int level = 0; level < _hierarchyLevels; level++)
+        for (int level = 0; level < HierarchyLevels; level++)
         {
-            ChunkLevel chunkLevel = _chunkLevels[level];
+            int startIndex = LevelStartIndices[level];
+            int removedCount = _levelRemovedChunksCount[level];
 
-            for (int i = 0; i < chunkLevel.RemovedChunksCount; i++)
+            for (int i = 0; i < removedCount; i++)
             {
-                int chunkIndex = chunkLevel.RemovedChunks[i].chunksIndex;
-                ChunkData chunk = _chunks[chunkIndex];
+                int chunkIndex = _levelRemovedChunks[startIndex + i].chunksIndex;
 
-                if (chunk.Parent != -1)
+                // --- Detach from parent ---
+                int parentIndex = ChunksParent[chunkIndex];
+                if (parentIndex != -1 && ChunksChildren.TryGetFirstValue(parentIndex, out int child, out NativeParallelMultiHashMapIterator<int> it))
                 {
-                    int parentIndex = chunk.Parent;
-                    ChunkData parent = _chunks[parentIndex];
+                    do { if (child == chunkIndex) { ChunksChildren.Remove(it); break; } }
+                    while (ChunksChildren.TryGetNextValue(out child, ref it));
 
-                    int childPos = parent.Children.IndexOf(chunkIndex);
-                    if (childPos != -1)
-                        parent.Children.RemoveAtSwapBack(childPos);
-
-                    chunk.Parent = -1;
-
-                    _chunks[parentIndex] = parent;
+                    ChunksParent[chunkIndex] = -1;
                 }
 
-                for (int c = 0; c < chunk.Children.Length; c++)
+                // --- Detach children ---
+                if (!ChunksChildren.TryGetFirstValue(chunkIndex, out int childIndex, out NativeParallelMultiHashMapIterator<int> cit))
                 {
-                    int childIndex = chunk.Children[c];
-                    ChunkData child = _chunks[childIndex];
-                    child.Parent = -1;
-                    _chunks[childIndex] = child;
+                    ChunksChildren.Remove(chunkIndex);
+                    continue;
                 }
-                chunk.Children.Clear();
-                _chunks[chunkIndex] = chunk;
+
+                do ChunksParent[childIndex] = -1;
+                while (ChunksChildren.TryGetNextValue(out childIndex, ref cit));
+
+                ChunksChildren.Remove(chunkIndex);
             }
-
-            _chunkLevels[level] = chunkLevel;
         }
     }
 
     void FindChunksToAdd()
     {
-        for (int levelIndex = 0; levelIndex < _hierarchyLevels; levelIndex++)
-        {
-            ChunkLevel level = _chunkLevels[levelIndex];
-            level.AddedChunksCount = 0;
-            _chunkLevels[levelIndex] = level;
-        }
+        for (int levelIndex = 0; levelIndex < HierarchyLevels; levelIndex++)
+            _levelAddedChunksCount[levelIndex] = 0;
 
-        for (int level = 0; level < _hierarchyLevels; level++)
+        for (int level = 0; level < HierarchyLevels; level++)
         {
-            ChunkLevel chunkLevel = _chunkLevels[level];
-            int gridScale = chunkLevel.GridScale;
+            int gridScale = LevelGridScale[level];
 
             int radiusGrid = (int)math.ceil((float)_loadingDistance / gridScale + 1);
             int radiusGridSqr = radiusGrid * radiusGrid;
@@ -250,26 +311,24 @@ public class Chunking : MonoBehaviour
             float2 playerGridF = (float2)_playerChunkCoord / gridScale - 0.5f;
             int2 playerGrid = new((int)math.round(playerGridF.x), (int)math.round(playerGridF.y));
 
-            int2 halfGridSize = new(
-                (GridSize.x / (gridScale * 2)) + 1,
-                (GridSize.y / (gridScale * 2)) + 1
-            );
+            int halfGridSizeX = (GridSize.x / (gridScale * 2)) + 1;
+            int halfGridSizeY = (GridSize.y / (gridScale * 2)) + 1;
 
-            for (int i = 0; i < chunkLevel.CircularCoords.Length; i++)
+            int startIndex = LevelStartIndices[level];
+            int count = LevelCircularCoordsCount[level];
+            for (int i = startIndex; i < startIndex + count; i++)
             {
-                int2 coord = chunkLevel.CircularCoords[i] + playerGrid;
+                int2 coord = LevelCircularCoords[i] + playerGrid;
                 int2 delta = coord - playerGrid;
                 int distSqr = delta.x * delta.x + delta.y * delta.y;
 
                 if (distSqr >= radiusGridSqr) continue;
-                if (coord.x < -halfGridSize.x || coord.x >= halfGridSize.x || coord.y < -halfGridSize.y || coord.y >= halfGridSize.y) continue;
-                if (chunkLevel.UsedChunksMap.ContainsKey(coord)) continue;
+                if (coord.x < -halfGridSizeX || coord.x >= halfGridSizeX || coord.y < -halfGridSizeY || coord.y >= halfGridSizeY) continue;
+                if (LevelUsedChunksMap.ContainsKey(new(level, coord.x, coord.y))) continue;
                 if (_freeChunksCount <= 0) break;
 
-                chunkLevel.AddedChunks[chunkLevel.AddedChunksCount++] = coord;
+                _levelAddedChunks[startIndex + _levelAddedChunksCount[level]++] = coord;
             }
-
-            _chunkLevels[level] = chunkLevel;
         }
     }
 
@@ -277,55 +336,54 @@ public class Chunking : MonoBehaviour
     {
         Vector3 offset = transform.position;
 
-        for (int level = 0; level < _hierarchyLevels; level++)
+        for (int level = 0; level < HierarchyLevels; level++)
         {
-            ChunkLevel chunkLevel = _chunkLevels[level];
-            int gridScale = chunkLevel.GridScale;
+            int gridScale = LevelGridScale[level];
+            int startIndex = LevelStartIndices[level];
 
-            for (int i = 0; i < chunkLevel.AddedChunksCount; i++)
+            for (int i = 0; i < _levelAddedChunksCount[level]; i++)
             {
-                int2 coord = chunkLevel.AddedChunks[i];
-
+                int2 coord = _levelAddedChunks[startIndex + i];
                 int index = _freeChunks[--_freeChunksCount];
 
-                chunkLevel.UsedChunks[chunkLevel.UsedChunksCount++] = index;
-                chunkLevel.UsedChunksMap.Add(coord, index);
+                LevelUsedChunks[startIndex + LevelUsedChunksCount[level]++] = index;
+                LevelUsedChunksMap.Add(new(level, coord.x, coord.y), index);
 
-                ChunkData chunk = _chunks[index];
-                ChunkingHelper.SetChunkData(ref chunk, offset, coord, gridScale, TileSize);
-                _chunks[index] = chunk;
+                float3 size = new(TileSize * gridScale);
+                float3 center = new(
+                    (coord.x + 0.5f) * TileSize.x * gridScale + offset.x,
+                    offset.y,
+                    (coord.y + 0.5f) * TileSize.z * gridScale + offset.z
+                );
+
+                ChunksIsVisible[index] = false;
+                ChunksParent[index] = -1;
+                ChunksGridCoord[index] = coord;
+                ChunksBounds[index] = new() { Center = center, Extents = size * 0.5f };
             }
-
-            _chunkLevels[level] = chunkLevel;
         }
     }
 
     void BuildRelations()
     {
-        for (int level = 0; level < _hierarchyLevels - 1; level++)
+        for (int level = 0; level < HierarchyLevels - 1; level++)
         {
-            ChunkLevel currentLevel = _chunkLevels[level];
-            ChunkLevel parentLevel = _chunkLevels[level + 1];
-
-            for (int i = 0; i < currentLevel.AddedChunksCount; i++)
+            int startIndex = LevelStartIndices[level];
+            for (int i = 0; i < _levelAddedChunksCount[level]; i++)
             {
-                int chunkIndex = currentLevel.UsedChunksMap[currentLevel.AddedChunks[i]];
-                ChunkData chunk = _chunks[chunkIndex];
+                int2 coord = _levelAddedChunks[startIndex + i];
+                int chunkIndex = LevelUsedChunksMap[new(level, coord.x, coord.y)];
+                int2 chunkGridCoord = ChunksGridCoord[chunkIndex];
 
                 int2 parentGridCoord = new(
-                    (int)math.floor((float)chunk.GridCoord.x / GroupSize),
-                    (int)math.floor((float)chunk.GridCoord.y / GroupSize)
+                    (int)math.floor((float)chunkGridCoord.x / GroupSize),
+                    (int)math.floor((float)chunkGridCoord.y / GroupSize)
                 );
 
-                if (parentLevel.UsedChunksMap.TryGetValue(parentGridCoord, out int parentIndex))
+                if (LevelUsedChunksMap.TryGetValue(new(level + 1, parentGridCoord.x, parentGridCoord.y), out int parentIndex))
                 {
-                    ChunkData parent = _chunks[parentIndex];
-
-                    chunk.Parent = parentIndex;
-                    parent.Children.Add(chunkIndex);
-
-                    _chunks[parentIndex] = parent;
-                    _chunks[chunkIndex] = chunk;
+                    ChunksParent[chunkIndex] = parentIndex;
+                    ChunksChildren.Add(parentIndex, chunkIndex);
                 }
             }
         }
@@ -333,46 +391,54 @@ public class Chunking : MonoBehaviour
 
     void Culling(int index, int level)
     {
-        ChunkData chunk = _chunks[index];
-        chunk.IsVisible = !(DistanceCull(chunk, level) || FrustumCull(chunk, level) || OcclusionCull(chunk, level));
-        _chunks[index] = chunk;
+        ChunksIsVisible[index] = !(DistanceCull(index, level) || FrustumCull(index, level) || OcclusionCull(index, level));
 
-        if (!chunk.IsVisible) return;
+        if (!ChunksIsVisible[index]) return;
 
-        for (int i = 0; i < chunk.Children.Length; i++)
-            Culling(chunk.Children[i], level - 1);
+        if (ChunksChildren.TryGetFirstValue(index, out int childIndex, out NativeParallelMultiHashMapIterator<int> it))
+        {
+            do Culling(childIndex, level - 1);
+            while (ChunksChildren.TryGetNextValue(out childIndex, ref it));
+        }
     }
 
-    bool DistanceCull(ChunkData chunk, int level)
+    bool DistanceCull(int index, int level)
     {
-        int gridScale = _chunkLevels[level].GridScale;
+        int gridScale = LevelGridScale[level];
 
         int2 _playerChunkCoordLocal = new(
-            (_playerChunkCoord.x / gridScale) + 1,
-            (_playerChunkCoord.y / gridScale) + 1
+            _playerChunkCoord.x / gridScale,
+            _playerChunkCoord.y / gridScale
         );
 
-        int2 diff = chunk.GridCoord - _playerChunkCoordLocal;
+        int2 diff = ChunksGridCoord[index] - _playerChunkCoordLocal;
         return diff.x * diff.x + diff.y * diff.y > _viewDistanceSqr;
     }
 
-    bool FrustumCull(ChunkData chunk, int level)
+    bool FrustumCull(int index, int level)
     {
-        return !GeometryUtility.TestPlanesAABB(_frustumPlanes, chunk.Bounds);
+        for (int i = 0; i < 6; i++)
+        {
+            AABB bounds = ChunksBounds[index];
+            float4 plane = _frustumFloat4s[i];
+            float3 normal = plane.xyz;
+            float3 absNormal = math.abs(normal);
+            float r = math.dot(bounds.Extents, absNormal);
+            float s = math.dot(bounds.Center, normal) + plane.w;
+
+            if (s + r < 0) return true;
+
+        }
+
+        return false;
     }
 
-    bool OcclusionCull(ChunkData chunk, int level)
+    bool OcclusionCull(int index, int level)
     {
         return false;
     }
 
-    public ChunkLevel GetChunkLevel(int level) => _chunkLevels[level];
-    public int GetHierarchyLevels() => _hierarchyLevels;
-    public ChunkData GetChunk(int index) => _chunks[index];
-}
-public static class ChunkingHelper
-{
-    public static NativeArray<int2> CalculateCircularCoords(int radius, int scale, Allocator allocator)
+    NativeArray<int2> CalculateCircularCoords(int radius, int scale, Allocator allocator)
     {
         int scaledRadius = (int)math.ceil((float)radius / scale + 1f);
         int radiusSqr = scaledRadius * scaledRadius;
@@ -384,8 +450,7 @@ public static class ChunkingHelper
             for (int y = -scaledRadius; y <= scaledRadius; y++)
             {
                 float distSqr = (x + 0.5f) * (x + 0.5f) + (y + 0.5f) * (y + 0.5f);
-                if (distSqr <= radiusSqr)
-                    coords.Add(new(x, y));
+                if (distSqr <= radiusSqr) coords.Add(new(x, y));
             }
         }
 
@@ -396,99 +461,57 @@ public static class ChunkingHelper
         return result;
     }
 
-    public static int CalculateHierarchyLevels(int loadingRadius, int groupSize)
+    int CalculateHierarchyLevels(int loadingRadius, int groupSize)
     {
         return (int)math.ceil(math.log(loadingRadius) / math.log(groupSize));
     }
-
-    public static void SetChunkData(ref ChunkData chunk, Vector3 offset, int2 gridCoord, int gridScale, int3 tileSize)
-    {
-        chunk.IsVisible = false;
-        chunk.Parent = -1;
-        chunk.Children.Clear();
-        chunk.GridCoord = gridCoord;
-
-        float3 size = new(tileSize * gridScale);
-        float3 center = new(
-            (gridCoord.x + 0.5f) * tileSize.x * gridScale + offset.x,
-            offset.y,
-            (gridCoord.y + 0.5f) * tileSize.z * gridScale + offset.z
-        );
-
-        chunk.Bounds = new(center, size);
-    }
-
-    public static ChunkData CreateChunkData(int groupSize)
-    {
-        return new ChunkData
-        {
-            Bounds = new(),
-            Children = new(groupSize * groupSize, Allocator.Persistent),
-            IsVisible = false,
-            Parent = -1
-        };
-    }
-
-    public static ChunkLevel CreateChunkLevel(int loadingRadius, int hierarchyLevel, int groupSize)
-    {
-        int gridScale = (hierarchyLevel == 0) ? 1 : (int)math.pow(groupSize, hierarchyLevel);
-        NativeArray<int2> circularCoords = CalculateCircularCoords(loadingRadius, gridScale, Allocator.Persistent);
-        int capacity = (int)(circularCoords.Length * 1.25f);
-
-        return new ChunkLevel
-        {
-            HierarchyLevel = hierarchyLevel,
-            GridScale = gridScale,
-            CircularCoords = circularCoords,
-            UsedChunks = new(capacity, Allocator.Persistent),
-            UsedChunksMap = new(capacity, Allocator.Persistent),
-            RemovedChunks = new(capacity, Allocator.Persistent),
-            AddedChunks = new(capacity, Allocator.Persistent),
-            RemovedChunksCount = 0,
-            AddedChunksCount = 0,
-            UsedChunksCount = 0
-        };
-    }
 }
 
-public struct ChunkLevel : IDisposable
+public struct AABB
 {
-    public NativeHashMap<int2, int> UsedChunksMap;
-
-    public NativeArray<int> UsedChunks;
-    public int UsedChunksCount;
-
-    public NativeArray<(int chunksIndex, int usedIndex)> RemovedChunks;
-    public int RemovedChunksCount;
-
-    public NativeArray<int2> AddedChunks;
-    public int AddedChunksCount;
-
-    public int HierarchyLevel;
-    public int GridScale;
-
-    public NativeArray<int2> CircularCoords;
-
-    public void Dispose()
-    {
-        if (UsedChunksMap.IsCreated) UsedChunksMap.Dispose();
-        if (UsedChunks.IsCreated) UsedChunks.Dispose();
-        if (RemovedChunks.IsCreated) RemovedChunks.Dispose();
-        if (AddedChunks.IsCreated) AddedChunks.Dispose();
-        if (CircularCoords.IsCreated) CircularCoords.Dispose();
-    }
+    public float3 Center;
+    public float3 Extents;
 }
 
-public struct ChunkData : IDisposable
+[BurstCompile(CompileSynchronously = true, FloatMode = FloatMode.Fast, FloatPrecision = FloatPrecision.Low)]
+struct CullingJob : IJobParallelFor
 {
-    public int2 GridCoord;
-    public Bounds Bounds;
-    public bool IsVisible;
-    public int Parent;
-    public NativeList<int> Children;
+    [ReadOnly] public NativeArray<AABB> ChunksBounds;
+    [ReadOnly] public NativeArray<int2> ChunksGridCoord;
+    [ReadOnly] public NativeArray<int> LevelGridScale;
+    [ReadOnly] public int PlayerChunkX;
+    [ReadOnly] public int PlayerChunkY;
+    [ReadOnly] public int ViewDistanceSqr;
+    [ReadOnly] public NativeArray<float4> FrustumPlanes;
 
-    public void Dispose()
+    [WriteOnly] public NativeArray<bool> ChunksIsVisible;
+
+    public void Execute(int index)
     {
-        if (Children.IsCreated) Children.Dispose();
+        // Distance culling
+        int2 diff = ChunksGridCoord[index] - new int2(PlayerChunkX, PlayerChunkY);
+        if (diff.x * diff.x + diff.y * diff.y > ViewDistanceSqr)
+        {
+            ChunksIsVisible[index] = false;
+            return;
+        }
+
+        // Frustum culling
+        AABB bounds = ChunksBounds[index];
+        for (int i = 0; i < 6; i++)
+        {
+            float4 plane = FrustumPlanes[i];
+            float3 normal = plane.xyz;
+            float3 absNormal = math.abs(normal);
+            float r = math.dot(bounds.Extents, absNormal);
+            float s = math.dot(bounds.Center, normal) + plane.w;
+            if (s + r < 0)
+            {
+                ChunksIsVisible[index] = false;
+                return;
+            }
+        }
+
+        ChunksIsVisible[index] = true;
     }
 }
