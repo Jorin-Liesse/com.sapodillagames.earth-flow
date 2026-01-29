@@ -8,17 +8,20 @@ using Unity.Jobs;
 public class ChunkerCore
 {
     const float TOLERANCE = 0.01f;
+    const int BATCH_COUNT = 64;
 
     #region Private Fields
     int2 _gridSize;
     int3 _tileSize;
     int _viewDistance;
+    int _bufferDistance;
     Vector3 _position;
 
     NativeArray<int2> _chunksGridCoord;
     NativeArray<AABB> _chunksBounds;
     NativeArray<bool> _chunksIsVisible;
 
+    NativeArray<bool> _usedChunkVisibility;
     NativeArray<int2> _circularCoords;
     NativeList<int> _usedChunks;
     NativeArray<byte> _chunkStamp;
@@ -35,7 +38,7 @@ public class ChunkerCore
 
     Vector3 _lastCameraPosition;
     Quaternion _lastCameraRotation;
-
+    
     int _viewDistanceSqr;
     NativeArray<float4> _frustumFloat4s;
     Plane[] _frustumPlanes;
@@ -71,6 +74,7 @@ public class ChunkerCore
         int totalGridSize = _gridSize.x * _gridSize.y;
         _chunkStamp = new(totalGridSize, Allocator.Persistent);
 
+        _usedChunkVisibility = new(_circularCoords.Length, Allocator.Persistent);
         _usedChunks = new(_circularCoords.Length, Allocator.Persistent);
         _removeIndices = new(_circularCoords.Length, Allocator.Persistent);
         _addIndices = new(_circularCoords.Length, Allocator.Persistent);
@@ -124,8 +128,6 @@ public class ChunkerCore
 
         if (math.all(_playerChunkCoord == _lastPlayerChunkCoord)) return;
 
-        float2 playerGridF = (float2)_playerChunkCoord * 2f;
-        int2 playerGrid = new((int)math.round(playerGridF.x), (int)math.round(playerGridF.y));
         int2 min = new(-(int)(_gridSize.x * 0.5f), -(int)(_gridSize.y * 0.5f));
         int2 max = new((int)(_gridSize.x * 0.5f), (int)(_gridSize.y * 0.5f));
 
@@ -133,7 +135,7 @@ public class ChunkerCore
         {
             UsedChunks = _usedChunks.AsArray(),
             ChunksGridCoord = _chunksGridCoord,
-            PlayerGrid = playerGrid,
+            PlayerGrid = _playerChunkCoord,
             RadiusSqr = _viewDistanceSqr,
             RemoveIndices = _removeIndices.AsParallelWriter()
         };
@@ -142,7 +144,7 @@ public class ChunkerCore
         {
             CircularCoords = _circularCoords,
             ChunkStamp = _chunkStamp,
-            PlayerGrid = playerGrid,
+            PlayerGrid = _playerChunkCoord,
             RadiusSqr = _viewDistanceSqr,
             Min = min,
             Max = max,
@@ -151,11 +153,11 @@ public class ChunkerCore
         };
 
         _removeIndices.Clear();
-        findChunksToRemoveJob.Schedule(_usedChunks.Length, 64).Complete();
+        findChunksToRemoveJob.Schedule(_usedChunks.Length, BATCH_COUNT).Complete();
         RemoveChunks();
 
         _addIndices.Clear();
-        findChunksToAddJob.Schedule(_circularCoords.Length, 64).Complete();
+        findChunksToAddJob.Schedule(_circularCoords.Length, BATCH_COUNT).Complete();
         AddChunks();
 
         _lastPlayerChunkCoord = _playerChunkCoord;
@@ -177,17 +179,19 @@ public class ChunkerCore
 
         CullingJob job = new()
         {
+            UsedChunks = _usedChunks.AsArray(),
             ChunksBounds = _chunksBounds,
-            ChunksGridCoord = _chunksGridCoord,
-            PlayerChunkX = _playerChunkCoord.x,
-            PlayerChunkY = _playerChunkCoord.y,
-            ViewDistanceSqr = _viewDistanceSqr,
             FrustumPlanes = _frustumFloat4s,
-            ChunksIsVisible = _chunksIsVisible
+            UsedVisibility = _usedChunkVisibility
         };
 
-        JobHandle handle = job.Schedule(_usedChunks.Length, 64);
-        handle.Complete();
+        job.Schedule(_usedChunks.Length, BATCH_COUNT).Complete();
+
+        for (int i = 0; i < _usedChunks.Length; i++)
+        {
+            int chunkIndex = _usedChunks[i];
+            _chunksIsVisible[chunkIndex] = _usedChunkVisibility[i];
+        }
 
         _lastCameraPosition = _cameraTransform.position;
         _lastCameraRotation = _cameraTransform.rotation;

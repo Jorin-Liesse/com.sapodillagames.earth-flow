@@ -1,4 +1,6 @@
+#region Using Statements
 using Unity.Mathematics;
+#endregion
 
 public struct AABB
 {

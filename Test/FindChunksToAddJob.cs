@@ -3,8 +3,7 @@ using Unity.Mathematics;
 using Unity.Burst;
 using Unity.Jobs;
 
-// [BurstCompile(CompileSynchronously = true, FloatMode = FloatMode.Fast, FloatPrecision = FloatPrecision.Low)]
-[BurstCompile]
+[BurstCompile(CompileSynchronously = true, FloatMode = FloatMode.Fast, FloatPrecision = FloatPrecision.Low)]
 public struct FindChunksToAddJob : IJobParallelFor
 {
     [ReadOnly] public NativeArray<int2> CircularCoords;
