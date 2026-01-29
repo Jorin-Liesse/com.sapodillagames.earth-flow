@@ -40,6 +40,8 @@ public class ChunkerCore
     Quaternion _lastCameraRotation;
     
     int _viewDistanceSqr;
+    int _loadingDistance;
+    int _loadingDistanceSqr;
     NativeArray<float4> _frustumFloat4s;
     Plane[] _frustumPlanes;
     #endregion
@@ -56,20 +58,23 @@ public class ChunkerCore
     #endregion
 
     #region Public Methods
-    public void Initialize(int2 gridSize, int3 tileSize, int viewDistance, Vector3 position)
+    public void Initialize(int2 gridSize, int3 tileSize, int viewDistance, int bufferDistance, Vector3 position)
     {
         _gridSize = gridSize;
         _tileSize = tileSize;
         _viewDistance = viewDistance;
+        _bufferDistance = bufferDistance;
         _position = position;
 
         _mainCamera = Camera.main;
         _cameraTransform = _mainCamera.transform;
         _viewDistanceSqr = _viewDistance * _viewDistance;
+        _loadingDistance = _viewDistance + _bufferDistance;
+        _loadingDistanceSqr = _loadingDistance * _loadingDistance;
         _lastPlayerChunkCoord = new(int.MinValue, int.MinValue);
         _extents = new(_tileSize.x * 0.5f, _tileSize.y * 0.5f, _tileSize.z * 0.5f);
 
-        _circularCoords = CalculateCircularCoords(_viewDistance);
+        _circularCoords = CalculateCircularCoords(_loadingDistance);
 
         int totalGridSize = _gridSize.x * _gridSize.y;
         _chunkStamp = new(totalGridSize, Allocator.Persistent);
@@ -98,6 +103,7 @@ public class ChunkerCore
 
     public void Cleanup()
     {
+        _usedChunkVisibility.Dispose();
         _circularCoords.Dispose();
         _usedChunks.Dispose();
         _chunkStamp.Dispose();
@@ -136,7 +142,7 @@ public class ChunkerCore
             UsedChunks = _usedChunks.AsArray(),
             ChunksGridCoord = _chunksGridCoord,
             PlayerGrid = _playerChunkCoord,
-            RadiusSqr = _viewDistanceSqr,
+            RadiusSqr = _loadingDistanceSqr,
             RemoveIndices = _removeIndices.AsParallelWriter()
         };
 
@@ -145,7 +151,7 @@ public class ChunkerCore
             CircularCoords = _circularCoords,
             ChunkStamp = _chunkStamp,
             PlayerGrid = _playerChunkCoord,
-            RadiusSqr = _viewDistanceSqr,
+            RadiusSqr = _loadingDistanceSqr,
             Min = min,
             Max = max,
             GridWidth = _gridSize.x,
@@ -182,6 +188,11 @@ public class ChunkerCore
             UsedChunks = _usedChunks.AsArray(),
             ChunksBounds = _chunksBounds,
             FrustumPlanes = _frustumFloat4s,
+
+            ChunksGridCoord = _chunksGridCoord,
+            PlayerGrid = _playerChunkCoord,
+            ViewDistanceSqr = _viewDistanceSqr,
+
             UsedVisibility = _usedChunkVisibility
         };
 

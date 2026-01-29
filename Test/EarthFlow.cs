@@ -3,12 +3,13 @@ using UnityEngine;
 using Unity.Mathematics;
 #endregion
 
-public class Chunker : MonoBehaviour
+public class EarthFlow : MonoBehaviour
 {
     #region Serialize Fields
     [SerializeField] int2 _gridSize = new(10000, 10000);
     [SerializeField] int3 _tileSize = new(10, 1, 10);
     [SerializeField] int _viewDistance = 100;
+    [SerializeField] int _bufferDistance = 1;
     #endregion
 
     #region Private Fields
@@ -23,7 +24,7 @@ public class Chunker : MonoBehaviour
     void Awake()
     {
         _chunkingCore = new ChunkerCore();
-        _chunkingCore.Initialize(_gridSize, _tileSize, _viewDistance, transform.position);
+        _chunkingCore.Initialize(_gridSize, _tileSize, _viewDistance, _bufferDistance, transform.position);
     }
 
     void OnDestroy()
@@ -41,7 +42,7 @@ public class Chunker : MonoBehaviour
 #if UNITY_EDITOR
     void OnValidate()
     {
-        _chunkingCore?.Initialize(_gridSize, _tileSize, _viewDistance, transform.position);
+        _chunkingCore?.Initialize(_gridSize, _tileSize, _viewDistance, _bufferDistance, transform.position);
     }
 #endif
     #endregion

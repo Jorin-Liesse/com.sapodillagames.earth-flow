@@ -1,7 +1,7 @@
 using UnityEngine;
 using Unity.Mathematics;
 
-[RequireComponent(typeof(Chunker))]
+[RequireComponent(typeof(EarthFlow))]
 public class ChunkerDisplay : MonoBehaviour
 {
     [SerializeField] bool _showVisibleChunks = false;
@@ -9,12 +9,12 @@ public class ChunkerDisplay : MonoBehaviour
     [SerializeField] bool _showCircularCoords = false;
     [SerializeField] bool _showWorldBounds = false;
 
-    Chunker _chunker;
+    EarthFlow _chunker;
     ChunkerCore _chunkerCore;
 
     void Start()
     {
-        _chunker = GetComponent<Chunker>();
+        _chunker = GetComponent<EarthFlow>();
         _chunkerCore = _chunker.ChunkerCore;
     }
 
