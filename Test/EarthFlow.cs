@@ -13,17 +13,17 @@ public class EarthFlow : MonoBehaviour
     #endregion
 
     #region Private Fields
-    ChunkerCore _chunkingCore;
+    Chunker _chunkingCore;
     #endregion
 
     #region Public Properties
-    public ChunkerCore ChunkerCore => _chunkingCore;
+    public Chunker ChunkerCore => _chunkingCore;
     #endregion
 
     #region Unity Methods
     void Awake()
     {
-        _chunkingCore = new ChunkerCore();
+        _chunkingCore = new Chunker();
         _chunkingCore.Initialize(_gridSize, _tileSize, _viewDistance, _bufferDistance, transform.position);
     }
 

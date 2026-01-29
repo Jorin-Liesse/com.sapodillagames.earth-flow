@@ -10,7 +10,7 @@ public class ChunkerDisplay : MonoBehaviour
     [SerializeField] bool _showWorldBounds = false;
 
     EarthFlow _chunker;
-    ChunkerCore _chunkerCore;
+    Chunker _chunkerCore;
 
     void Start()
     {

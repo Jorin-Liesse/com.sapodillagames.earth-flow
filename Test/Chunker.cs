@@ -5,7 +5,7 @@ using Unity.Mathematics;
 using Unity.Jobs;
 #endregion
 
-public class ChunkerCore
+public class Chunker
 {
     const float TOLERANCE = 0.01f;
     const int BATCH_COUNT = 64;
